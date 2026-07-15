@@ -263,9 +263,11 @@ if not df.empty:
         df_status = df[df['status'] == status]
         total_yuan = (df_status['buy_price_yuan'] * df_status['quantity_needed']).sum() if not df_status.empty else 0
         total_profit = df_status['pure_profit_toman'].sum() if not df_status.empty else 0
+        total_net_sales = (df_status['net_sales_toman'] * df_status['quantity_needed']).sum() if not df_status.empty else 0
         
         st.sidebar.markdown(f"**{status}**")
         st.sidebar.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
+        st.sidebar.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
         st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
 
 with tabs[0]: 
