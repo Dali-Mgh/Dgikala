@@ -187,6 +187,10 @@ def render_product_table(df_subset, tab_key):
     
     # فرمت کردن ستون‌های نمایشی و غیرقابل ویرایش به صورت استرینگ دارای کاما
     display_df = df_subset.copy()
+    display_df['cbm_rate_toman'] = display_df['cbm_rate_toman'].map('{:,.0f}'.format)
+    display_df['digikala_price_toman'] = display_df['digikala_price_toman'].map('{:,.0f}'.format)
+    display_df['tax_amount_toman'] = display_df['tax_amount_toman'].map('{:,.0f}'.format)
+    display_df['processing_fee_toman'] = display_df['processing_fee_toman'].map('{:,.0f}'.format)
     display_df['net_sales_toman'] = display_df['net_sales_toman'].map('{:,.0f}'.format)
     display_df['pure_profit_toman'] = display_df['pure_profit_toman'].map('{:,.0f}'.format)
     display_df['profit_percent'] = display_df['profit_percent'].map('{:.2f} %'.format)
@@ -217,12 +221,12 @@ def render_product_table(df_subset, tab_key):
             "height_cm": st.column_config.NumberColumn("ارتفاع (cm)"),
             "carton_weight_kg": st.column_config.NumberColumn("وزن هر کارتن (kg)"),
             "pcs_per_carton": st.column_config.NumberColumn("تعداد در کارتن"),
-            "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)"),
+            "cbm_rate_toman": st.column_config.TextColumn("هزینه CBM (تومان)"),
             "buy_price_yuan": st.column_config.NumberColumn("قیمت خرید(یوان)"),
-            "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)"),
-            "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)"),
+            "digikala_price_toman": st.column_config.TextColumn("قیمت فروش (تومان)"),
+            "tax_amount_toman": st.column_config.TextColumn("مالیات (تومان)"),
             "commission_percent": st.column_config.NumberColumn("کمیسیون (%)"),
-            "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)"),
+            "processing_fee_toman": st.column_config.TextColumn("هزینه پردازش (تومان)"),
             "net_sales_toman": st.column_config.TextColumn("خالص فروش هر واحد", disabled=True),
             "pure_profit_toman": st.column_config.TextColumn("سود خالص کل (تومان)", disabled=True),
             "profit_percent": st.column_config.TextColumn("حاشیه سود", disabled=True),
@@ -275,14 +279,20 @@ def render_product_table(df_subset, tab_key):
         for _, row in edited_df.iterrows():
             orig_row = df_subset[df_subset['id'] == row['id']].iloc[0]
             
+            # حذف کاما و تبدیل به عدد برای ذخیره در دیتابیس
+            cbm_clean = float(str(row['cbm_rate_toman']).replace(',', ''))
+            dk_clean = float(str(row['digikala_price_toman']).replace(',', ''))
+            tax_clean = float(str(row['tax_amount_toman']).replace(',', ''))
+            proc_clean = float(str(row['processing_fee_toman']).replace(',', ''))
+            
             # ثبت در کنتور فقط در صورت تغییر وضعیت از درخواستی به ارسال شده یا موجود
             if orig_row['status'] == 'کالاهای درخواستی' and row['status'] in ['کالاهای ارسال شده', 'کالاهای موجود']:
                 added_lt_yuan += float(row['buy_price_yuan'] * row['quantity_needed'])
                 cbm = (row['length_cm'] * row['width_cm'] * row['height_cm']) / 1000000
                 pcs = row['pcs_per_carton'] if row['pcs_per_carton'] > 0 else 1
-                added_lt_shipping += float((cbm / pcs) * row['cbm_rate_toman'] * row['quantity_needed'])
+                added_lt_shipping += float((cbm / pcs) * cbm_clean * row['quantity_needed'])
                 
-                dk_net_single = row['digikala_price_toman'] - row['tax_amount_toman'] - (row['digikala_price_toman'] * (row['commission_percent'] / 100)) - row['processing_fee_toman']
+                dk_net_single = dk_clean - tax_clean - (dk_clean * (row['commission_percent'] / 100)) - proc_clean
                 added_lt_net_sales += float(dk_net_single * row['quantity_needed'])
 
             cursor.execute('''
@@ -295,8 +305,8 @@ def render_product_table(df_subset, tab_key):
             ''', (
                 row['name'], row['category'], row['status'], row['supplier_link'], row['digikala_link'], row['dkp_code'],
                 row['quantity_needed'], row['length_cm'], row['width_cm'], row['height_cm'], row['pcs_per_carton'],
-                row['cbm_rate_toman'], row['buy_price_yuan'], row['digikala_price_toman'], row['tax_amount_toman'],
-                row['commission_percent'], row['processing_fee_toman'], row['carton_weight_kg'], row['id']
+                cbm_clean, row['buy_price_yuan'], dk_clean, tax_clean,
+                row['commission_percent'], proc_clean, row['carton_weight_kg'], row['id']
             ))
             
         # آپدیت مقادیر کنتور در دیتابیس
