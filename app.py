@@ -47,7 +47,6 @@ def init_db():
         pass
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value REAL)''')
     
-    # Update old statuses to new ones if they exist
     cursor.execute("UPDATE products SET status = 'کالاهای درخواستی' WHERE status = 'جدید' OR status = 'نیاز به شارژ'")
     cursor.execute("UPDATE products SET status = 'کالاهای موجود' WHERE status = 'موجودی کافی'")
     
@@ -234,7 +233,7 @@ def render_product_table(df_subset, tab_key):
                 st.success("کالا با موفقیت حذف شد!")
                 st.rerun()
 
-# ================= تب‌ها =================
+# ================= خواندن اطلاعات و تب‌ها =================
 tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل"])
 
 conn = sqlite3.connect('smart_excel.db')
@@ -244,17 +243,40 @@ conn.close()
 if not df.empty:
     df[['pure_profit_toman', 'profit_percent']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
     df['cbm_per_carton'] = (df['length_cm'] * df['width_cm'] * df['height_cm']) / 1000000
+    
+    # اضافه کردن خلاصه مالی به سایدبار
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 گزارش مالی")
+    for status in STATUS_OPTIONS:
+        df_status = df[df['status'] == status]
+        total_yuan = (df_status['buy_price_yuan'] * df_status['quantity_needed']).sum() if not df_status.empty else 0
+        total_profit = df_status['pure_profit_toman'].sum() if not df_status.empty else 0
+        
+        st.sidebar.markdown(f"**{status}**")
+        st.sidebar.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
+        st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
+    
+    # فرمت‌دهی برای نمایش در جدول
     df['pure_profit_toman'] = df['pure_profit_toman'].map('{:,.0f}'.format)
     df['profit_percent'] = df['profit_percent'].map('{:.2f}%'.format)
 
 with tabs[0]: 
     render_product_table(df, "all")
 with tabs[1]: 
-    render_product_table(df[df['status'] == 'کالاهای درخواستی'], "req")
+    if not df.empty:
+        render_product_table(df[df['status'] == 'کالاهای درخواستی'], "req")
+    else:
+        st.info("لیست کالاها در این بخش خالی است.")
 with tabs[2]: 
-    render_product_table(df[df['status'] == 'کالاهای ارسال شده'], "sent")
+    if not df.empty:
+        render_product_table(df[df['status'] == 'کالاهای ارسال شده'], "sent")
+    else:
+        st.info("لیست کالاها در این بخش خالی است.")
 with tabs[3]: 
-    render_product_table(df[df['status'] == 'کالاهای موجود'], "stock")
+    if not df.empty:
+        render_product_table(df[df['status'] == 'کالاهای موجود'], "stock")
+    else:
+        st.info("لیست کالاها در این بخش خالی است.")
 
 with tabs[4]:
     with st.form("add_product_form"):
