@@ -35,9 +35,14 @@ def init_db():
         name TEXT, category TEXT, status TEXT, supplier_link TEXT, digikala_link TEXT, dkp_code TEXT,
         quantity_needed INTEGER, length_cm REAL, width_cm REAL, height_cm REAL, pcs_per_carton INTEGER,
         cbm_rate_toman REAL, buy_price_yuan REAL, digikala_price_toman REAL, tax_amount_toman REAL,
-        commission_percent REAL, processing_fee_toman REAL, pure_profit_toman REAL, profit_percent REAL
+        commission_percent REAL, processing_fee_toman REAL, pure_profit_toman REAL, profit_percent REAL,
+        carton_weight_kg REAL
     )
     ''')
+    try:
+        cursor.execute("ALTER TABLE products ADD COLUMN carton_weight_kg REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass # ستون از قبل وجود دارد
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value REAL)''')
     conn.commit()
     conn.close()
@@ -173,18 +178,19 @@ with tab1:
                 "name": "نام کالا",
                 "category": "دسته بندی",
                 "status": st.column_config.SelectboxColumn("وضعیت", options=["جدید", "نیاز به شارژ", "موجودی کافی"]),
-                "supplier_link": None, # پنهان کردن از نمایش
-                "digikala_link": None,
+                "supplier_link": st.column_config.LinkColumn("لینک تامین", display_text="🔗 مشاهده سایت"),
+                "digikala_link": st.column_config.LinkColumn("لینک دیجی", display_text="🔗 مشاهده سایت"),
                 "dkp_code": "کد DKP",
                 "quantity_needed": st.column_config.NumberColumn("تعداد نیاز"),
-                "length_cm": None,
-                "width_cm": None,
-                "height_cm": None,
+                "length_cm": st.column_config.NumberColumn("طول (cm)"),
+                "width_cm": st.column_config.NumberColumn("عرض (cm)"),
+                "height_cm": st.column_config.NumberColumn("ارتفاع (cm)"),
+                "carton_weight_kg": st.column_config.NumberColumn("وزن هر کارتن (kg)"),
                 "pcs_per_carton": st.column_config.NumberColumn("تعداد در کارتن"),
                 "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)"),
                 "buy_price_yuan": st.column_config.NumberColumn("قیمت خرید(یوان)"),
                 "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)"),
-                "tax_amount_toman": None,
+                "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)"),
                 "commission_percent": st.column_config.NumberColumn("کمیسیون (%)"),
                 "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)"),
                 "pure_profit_toman": st.column_config.NumberColumn("سود خالص کل (تومان)", disabled=True),
@@ -202,13 +208,13 @@ with tab1:
                     name=?, category=?, status=?, supplier_link=?, digikala_link=?, dkp_code=?,
                     quantity_needed=?, length_cm=?, width_cm=?, height_cm=?, pcs_per_carton=?,
                     cbm_rate_toman=?, buy_price_yuan=?, digikala_price_toman=?, tax_amount_toman=?,
-                    commission_percent=?, processing_fee_toman=?
+                    commission_percent=?, processing_fee_toman=?, carton_weight_kg=?
                     WHERE id=?
                 ''', (
                     row['name'], row['category'], row['status'], row['supplier_link'], row['digikala_link'], row['dkp_code'],
                     row['quantity_needed'], row['length_cm'], row['width_cm'], row['height_cm'], row['pcs_per_carton'],
                     row['cbm_rate_toman'], row['buy_price_yuan'], row['digikala_price_toman'], row['tax_amount_toman'],
-                    row['commission_percent'], row['processing_fee_toman'], row['id']
+                    row['commission_percent'], row['processing_fee_toman'], row['carton_weight_kg'], row['id']
                 ))
             conn.commit()
             conn.close()
@@ -251,10 +257,11 @@ with tab2:
         pcs_carton = col9.number_input("تعداد در کارتن", min_value=1, value=50)
         cbm_rate = col10.number_input("هزینه هر CBM (تومان)", min_value=0.0, value=15000000.0)
         
-        col11, col12, col13 = st.columns(3)
+        col11, col12, col13, col_weight = st.columns(4)
         length = col11.number_input("طول (cm)", min_value=0.0, value=50.0)
         width = col12.number_input("عرض (cm)", min_value=0.0, value=40.0)
         height = col13.number_input("ارتفاع (cm)", min_value=0.0, value=30.0)
+        weight = col_weight.number_input("وزن کارتن (kg)", min_value=0.0, value=10.0)
         
         col14, col15, col16, col17 = st.columns(4)
         dk_price = col14.number_input("قیمت فروش (تومان)", min_value=0.0, value=200000.0)
@@ -265,8 +272,8 @@ with tab2:
         if st.form_submit_button("ثبت کالا"):
             conn = sqlite3.connect('smart_excel.db')
             cursor = conn.cursor()
-            cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)''', 
-                           (name, category, status, sup_link, dk_link, dkp, qty, length, width, height, pcs_carton, cbm_rate, buy_price, dk_price, tax, comm, proc_fee))
+            cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)''', 
+                           (name, category, status, sup_link, dk_link, dkp, qty, length, width, height, pcs_carton, cbm_rate, buy_price, dk_price, tax, comm, proc_fee, weight))
             conn.commit()
             conn.close()
             st.success("کالا ثبت شد!")
@@ -304,9 +311,9 @@ with tab3:
 with tab4:
     st.subheader("📥 ورودی/خروجی اکسل")
     sample_df = pd.DataFrame({
-        'نام کالا': ['نمونه'], 'دسته بندی': ['ورزشی'], 'وضعیت': ['جدید'], 'لینک تامین': [''], 
-        'لینک دیجی': [''], 'کد DKP': [''], 'تعداد': [10], 'قیمت خرید(یوان)': [50], 
-        'تعداد در کارتن': [20], 'هزینه CBM': [15000000], 'طول': [40], 'عرض': [30], 'ارتفاع': [20], 
+        'نام کالا': ['نمونه'], 'دسته بندی': ['ورزشی'], 'وضعیت': ['جدید'], 'لینک تامین': ['https://'], 
+        'لینک دیجی': ['https://'], 'کد DKP': [''], 'تعداد': [10], 'قیمت خرید(یوان)': [50], 
+        'تعداد در کارتن': [20], 'وزن هر کارتن': [10], 'هزینه CBM': [15000000], 'طول': [40], 'عرض': [30], 'ارتفاع': [20], 
         'قیمت فروش': [500000], 'مالیات': [0], 'کمیسیون(%)': [5], 'هزینه پردازش': [5000]
     })
     
@@ -324,12 +331,12 @@ with tab4:
             conn = sqlite3.connect('smart_excel.db')
             cursor = conn.cursor()
             for _, row in df_in.iterrows():
-                cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)''', (
+                cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)''', (
                     str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), str(row.get('وضعیت', 'جدید')), 
                     str(row.get('لینک تامین', '')), str(row.get('لینک دیجی', '')), str(row.get('کد DKP', '')), 
                     int(row.get('تعداد', 0)), float(row.get('طول', 0)), float(row.get('عرض', 0)), float(row.get('ارتفاع', 0)), 
                     int(row.get('تعداد در کارتن', 1)), float(row.get('هزینه CBM', 0)), float(row.get('قیمت خرید(یوان)', 0)), 
-                    float(row.get('قیمت فروش', 0)), float(row.get('مالیات', 0)), float(row.get('کمیسیون(%)', 0)), float(row.get('هزینه پردازش', 0))
+                    float(row.get('قیمت فروش', 0)), float(row.get('مالیات', 0)), float(row.get('کمیسیون(%)', 0)), float(row.get('هزینه پردازش', 0)), float(row.get('وزن هر کارتن', 0))
                 ))
             conn.commit()
             conn.close()
