@@ -84,6 +84,17 @@ def get_products():
                    "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
                    "carton_weight_kg", "net_sales_toman"])
     df = pd.DataFrame(records)
+    
+    # تبدیل اجباری ستون‌های عددی به اعشاری (float) برای جلوگیری از ارور Pandas
+    num_cols = ["quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
+                "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
+                "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
+                "carton_weight_kg", "net_sales_toman"]
+    
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+            
     return df
 
 def save_products(df):
@@ -185,7 +196,7 @@ def calculate_fees(dk_price, comm_pct):
     comm_amount = dk_price * (comm_pct / 100.0)
     tax = (0.10 * (proc_fee / 2.0)) + (0.10 * comm_amount)
     
-    return proc_fee, tax
+    return float(proc_fee), float(tax)
 
 def dynamic_calc(row, current_yuan):
     try:
@@ -332,18 +343,18 @@ def render_product_table(df_subset, tab_key):
                 df_all.at[i, 'supplier_link'] = row['supplier_link']
                 df_all.at[i, 'digikala_link'] = row['digikala_link']
                 df_all.at[i, 'dkp_code'] = row['dkp_code']
-                df_all.at[i, 'quantity_needed'] = row['quantity_needed']
-                df_all.at[i, 'length_cm'] = row['length_cm']
-                df_all.at[i, 'width_cm'] = row['width_cm']
-                df_all.at[i, 'height_cm'] = row['height_cm']
-                df_all.at[i, 'pcs_per_carton'] = row['pcs_per_carton']
-                df_all.at[i, 'cbm_rate_toman'] = cbm_clean
-                df_all.at[i, 'buy_price_yuan'] = row['buy_price_yuan']
-                df_all.at[i, 'digikala_price_toman'] = dk_clean
-                df_all.at[i, 'tax_amount_toman'] = tax_calc
-                df_all.at[i, 'commission_percent'] = comm_val
-                df_all.at[i, 'processing_fee_toman'] = proc_calc
-                df_all.at[i, 'carton_weight_kg'] = row['carton_weight_kg']
+                df_all.at[i, 'quantity_needed'] = float(row['quantity_needed'])
+                df_all.at[i, 'length_cm'] = float(row['length_cm'])
+                df_all.at[i, 'width_cm'] = float(row['width_cm'])
+                df_all.at[i, 'height_cm'] = float(row['height_cm'])
+                df_all.at[i, 'pcs_per_carton'] = float(row['pcs_per_carton'])
+                df_all.at[i, 'cbm_rate_toman'] = float(cbm_clean)
+                df_all.at[i, 'buy_price_yuan'] = float(row['buy_price_yuan'])
+                df_all.at[i, 'digikala_price_toman'] = float(dk_clean)
+                df_all.at[i, 'tax_amount_toman'] = float(tax_calc)
+                df_all.at[i, 'commission_percent'] = float(comm_val)
+                df_all.at[i, 'processing_fee_toman'] = float(proc_calc)
+                df_all.at[i, 'carton_weight_kg'] = float(row['carton_weight_kg'])
             
         save_products(df_all)
         
@@ -431,18 +442,20 @@ with tabs[5]:
         
         if st.form_submit_button("ثبت کالا"):
             df_all = get_products()
-            new_id = int(df_all['id'].max()) + 1 if not df_all.empty and 'id' in df_all.columns else 1
+            new_id = 1
+            if not df_all.empty and 'id' in df_all.columns and not pd.isna(df_all['id'].max()):
+                new_id = int(df_all['id'].max()) + 1
             
             proc_calc, tax_calc = calculate_fees(dk_price, comm)
             
             new_row = {
                 'id': new_id, 'name': name, 'category': category, 'status': status, 
                 'supplier_link': sup_link, 'digikala_link': dk_link, 'dkp_code': dkp, 
-                'quantity_needed': qty, 'length_cm': length, 'width_cm': width, 'height_cm': height, 
-                'pcs_per_carton': pcs_carton, 'cbm_rate_toman': cbm_rate, 'buy_price_yuan': buy_price, 
-                'digikala_price_toman': dk_price, 'tax_amount_toman': tax_calc, 'commission_percent': comm, 
-                'processing_fee_toman': proc_calc, 'pure_profit_toman': 0, 'profit_percent': 0, 
-                'carton_weight_kg': weight, 'net_sales_toman': 0
+                'quantity_needed': float(qty), 'length_cm': float(length), 'width_cm': float(width), 'height_cm': float(height), 
+                'pcs_per_carton': float(pcs_carton), 'cbm_rate_toman': float(cbm_rate), 'buy_price_yuan': float(buy_price), 
+                'digikala_price_toman': float(dk_price), 'tax_amount_toman': float(tax_calc), 'commission_percent': float(comm), 
+                'processing_fee_toman': float(proc_calc), 'pure_profit_toman': 0.0, 'profit_percent': 0.0, 
+                'carton_weight_kg': float(weight), 'net_sales_toman': 0.0
             }
             
             df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
@@ -519,16 +532,18 @@ with tabs[7]:
             added_lt_net_sales = 0.0
             
             new_rows = []
-            current_max_id = int(df_all['id'].max()) if not df_all.empty and 'id' in df_all.columns else 0
+            current_max_id = 0
+            if not df_all.empty and 'id' in df_all.columns and not pd.isna(df_all['id'].max()):
+                current_max_id = int(df_all['id'].max())
             
             for _, row in df_in.iterrows():
                 status_val = str(row.get('وضعیت', 'کالاهای درخواستی'))
-                qty_val = int(row.get('تعداد', 0))
+                qty_val = float(row.get('تعداد', 0))
                 buy_val = float(row.get('قیمت خرید(یوان)', 0))
                 l_val = float(row.get('طول', 0))
                 w_val = float(row.get('عرض', 0))
                 h_val = float(row.get('ارتفاع', 0))
-                pcs_val = int(row.get('تعداد در کارتن', 1))
+                pcs_val = float(row.get('تعداد در کارتن', 1))
                 cbm_rate_val = float(row.get('هزینه CBM', 0))
                 dk_price = float(row.get('قیمت فروش', 0))
                 comm = float(row.get('کمیسیون(%)', 0))
@@ -564,10 +579,10 @@ with tabs[7]:
                     'tax_amount_toman': tax_calc,
                     'commission_percent': comm,
                     'processing_fee_toman': proc_calc,
-                    'pure_profit_toman': 0,
-                    'profit_percent': 0,
+                    'pure_profit_toman': 0.0,
+                    'profit_percent': 0.0,
                     'carton_weight_kg': float(row.get('وزن هر کارتن', 0)),
-                    'net_sales_toman': 0
+                    'net_sales_toman': 0.0
                 })
             
             if new_rows:
