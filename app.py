@@ -77,23 +77,28 @@ def get_products():
     sh = get_gsheet()
     ws = sh.worksheet("products")
     records = ws.get_all_records()
-    if not records:
-        return pd.DataFrame(columns=["id", "name", "category", "status", "supplier_link", "digikala_link", "dkp_code", 
-                   "quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
-                   "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
-                   "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
-                   "carton_weight_kg", "net_sales_toman"])
-    df = pd.DataFrame(records)
     
-    # تبدیل اجباری ستون‌های عددی به اعشاری (float) برای جلوگیری از ارور Pandas
+    headers = ["id", "name", "category", "status", "supplier_link", "digikala_link", "dkp_code", 
+               "quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
+               "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
+               "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
+               "carton_weight_kg", "net_sales_toman"]
+               
+    if not records:
+        df = pd.DataFrame(columns=headers)
+    else:
+        df = pd.DataFrame(records)
+        for h in headers:
+            if h not in df.columns:
+                df[h] = ""
+    
     num_cols = ["quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
                 "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
                 "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
                 "carton_weight_kg", "net_sales_toman"]
     
     for col in num_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0)
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype('float64')
             
     return df
 
@@ -189,13 +194,10 @@ with st.sidebar:
 def calculate_fees(dk_price, comm_pct):
     if dk_price <= 0:
         return 0.0, 0.0
-    # محاسبه هزینه پردازش
     proc_fee = dk_price * 0.07
     proc_fee = max(36000.0, min(proc_fee, 240000.0))
-    # محاسبه ارزش افزوده
     comm_amount = dk_price * (comm_pct / 100.0)
     tax = (0.10 * (proc_fee / 2.0)) + (0.10 * comm_amount)
-    
     return float(proc_fee), float(tax)
 
 def dynamic_calc(row, current_yuan):
@@ -322,7 +324,6 @@ def render_product_table(df_subset, tab_key):
             dk_clean = float(str(row['digikala_price_toman']).replace(',', ''))
             comm_val = float(row['commission_percent'])
             
-            # محاسبه مجدد در زمان ذخیره
             proc_calc, tax_calc = calculate_fees(dk_clean, comm_val)
             
             if orig_row['status'] not in ACTIVE_STATUSES and row['status'] in ACTIVE_STATUSES:
@@ -337,24 +338,24 @@ def render_product_table(df_subset, tab_key):
             idx = df_all.index[df_all['id'] == row['id']].tolist()
             if idx:
                 i = idx[0]
-                df_all.at[i, 'name'] = row['name']
-                df_all.at[i, 'category'] = row['category']
-                df_all.at[i, 'status'] = row['status']
-                df_all.at[i, 'supplier_link'] = row['supplier_link']
-                df_all.at[i, 'digikala_link'] = row['digikala_link']
-                df_all.at[i, 'dkp_code'] = row['dkp_code']
-                df_all.at[i, 'quantity_needed'] = float(row['quantity_needed'])
-                df_all.at[i, 'length_cm'] = float(row['length_cm'])
-                df_all.at[i, 'width_cm'] = float(row['width_cm'])
-                df_all.at[i, 'height_cm'] = float(row['height_cm'])
-                df_all.at[i, 'pcs_per_carton'] = float(row['pcs_per_carton'])
-                df_all.at[i, 'cbm_rate_toman'] = float(cbm_clean)
-                df_all.at[i, 'buy_price_yuan'] = float(row['buy_price_yuan'])
-                df_all.at[i, 'digikala_price_toman'] = float(dk_clean)
-                df_all.at[i, 'tax_amount_toman'] = float(tax_calc)
-                df_all.at[i, 'commission_percent'] = float(comm_val)
-                df_all.at[i, 'processing_fee_toman'] = float(proc_calc)
-                df_all.at[i, 'carton_weight_kg'] = float(row['carton_weight_kg'])
+                df_all.loc[i, 'name'] = str(row['name'])
+                df_all.loc[i, 'category'] = str(row['category'])
+                df_all.loc[i, 'status'] = str(row['status'])
+                df_all.loc[i, 'supplier_link'] = str(row['supplier_link'])
+                df_all.loc[i, 'digikala_link'] = str(row['digikala_link'])
+                df_all.loc[i, 'dkp_code'] = str(row['dkp_code'])
+                df_all.loc[i, 'quantity_needed'] = float(row['quantity_needed'])
+                df_all.loc[i, 'length_cm'] = float(row['length_cm'])
+                df_all.loc[i, 'width_cm'] = float(row['width_cm'])
+                df_all.loc[i, 'height_cm'] = float(row['height_cm'])
+                df_all.loc[i, 'pcs_per_carton'] = float(row['pcs_per_carton'])
+                df_all.loc[i, 'cbm_rate_toman'] = float(cbm_clean)
+                df_all.loc[i, 'buy_price_yuan'] = float(row['buy_price_yuan'])
+                df_all.loc[i, 'digikala_price_toman'] = float(dk_clean)
+                df_all.loc[i, 'tax_amount_toman'] = float(tax_calc)
+                df_all.loc[i, 'commission_percent'] = float(comm_val)
+                df_all.loc[i, 'processing_fee_toman'] = float(proc_calc)
+                df_all.loc[i, 'carton_weight_kg'] = float(row['carton_weight_kg'])
             
         save_products(df_all)
         
