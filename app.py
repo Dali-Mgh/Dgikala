@@ -96,9 +96,15 @@ def get_products():
                 "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
                 "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
                 "carton_weight_kg", "net_sales_toman"]
+                
+    str_cols = ["name", "category", "status", "supplier_link", "digikala_link", "dkp_code"]
     
     for col in num_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0.0).astype('float64')
+        
+    for col in str_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
             
     return df
 
@@ -312,6 +318,8 @@ def render_product_table(df_subset, tab_key):
 
     if st.button("💾 ذخیره تغییرات", key=f"save_btn_{tab_key}"):
         df_all = get_products()
+        # تبدیل کل دیتافریم به آبجکت برای جلوگیری قطعی از خطاهای نوع داده (dtype) پانداس
+        df_all = df_all.astype(object)
         
         added_lt_yuan = 0.0
         added_lt_shipping = 0.0
@@ -443,9 +451,14 @@ with tabs[5]:
         
         if st.form_submit_button("ثبت کالا"):
             df_all = get_products()
-            new_id = 1
-            if not df_all.empty and 'id' in df_all.columns and not pd.isna(df_all['id'].max()):
-                new_id = int(df_all['id'].max()) + 1
+            
+            # محاسبه امن ID جدید
+            current_max_id = 0
+            if not df_all.empty and 'id' in df_all.columns:
+                valid_ids = pd.to_numeric(df_all['id'], errors='coerce').dropna()
+                if not valid_ids.empty:
+                    current_max_id = int(valid_ids.max())
+            new_id = current_max_id + 1
             
             proc_calc, tax_calc = calculate_fees(dk_price, comm)
             
@@ -533,9 +546,13 @@ with tabs[7]:
             added_lt_net_sales = 0.0
             
             new_rows = []
+            
+            # محاسبه امن ID جدید
             current_max_id = 0
-            if not df_all.empty and 'id' in df_all.columns and not pd.isna(df_all['id'].max()):
-                current_max_id = int(df_all['id'].max())
+            if not df_all.empty and 'id' in df_all.columns:
+                valid_ids = pd.to_numeric(df_all['id'], errors='coerce').dropna()
+                if not valid_ids.empty:
+                    current_max_id = int(valid_ids.max())
             
             for _, row in df_in.iterrows():
                 status_val = str(row.get('وضعیت', 'کالاهای درخواستی'))
