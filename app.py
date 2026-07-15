@@ -1,11 +1,102 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import io
 import requests
 from bs4 import BeautifulSoup
+import gspread
 
 st.set_page_config(page_title="مدیریت هوشمند خرید", layout="wide")
+
+# ================= تنظیمات گوگل شیت =================
+# ⚠️ لینک فایل گوگل شیت خود را دقیقاً اینجا بین دو کوتیشن قرار دهید:
+SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IniJrxUUYOqpEr8EP6DpOyoiAHxa3DabLgpszgdmHrk/edit?usp=sharing"
+
+@st.cache_resource
+def get_gsheet():
+    if SPREADSHEET_URL == "لینک_فایل_گوگل_شیت_خود_را_اینجا_قرار_دهید":
+        st.error("لطفا ابتدا لینک گوگل شیت را در متغیر SPREADSHEET_URL (خط 10 کد) وارد کنید!")
+        st.stop()
+    try:
+        credentials = dict(st.secrets["gcp_service_account"])
+        gc = gspread.service_account_from_dict(credentials)
+        sh = gc.open_by_url(SPREADSHEET_URL)
+        return sh
+    except Exception as e:
+        st.error(f"خطا در اتصال به گوگل شیت. آیا ایمیل به فایل اضافه شده است؟ \n {e}")
+        st.stop()
+
+def init_db():
+    sh = get_gsheet()
+    # ساخت شیت محصولات در صورت عدم وجود
+    try:
+        sh.worksheet("products")
+    except gspread.WorksheetNotFound:
+        ws_products = sh.add_worksheet(title="products", rows="100", cols="25")
+        headers = ["id", "name", "category", "status", "supplier_link", "digikala_link", "dkp_code", 
+                   "quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
+                   "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
+                   "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
+                   "carton_weight_kg", "net_sales_toman"]
+        ws_products.append_row(headers)
+    
+    # ساخت شیت تنظیمات در صورت عدم وجود
+    try:
+        sh.worksheet("settings")
+    except gspread.WorksheetNotFound:
+        ws_settings = sh.add_worksheet(title="settings", rows="10", cols="2")
+        ws_settings.append_row(["key", "value"])
+        ws_settings.append_rows([
+            ["yuan_rate", 9000.0],
+            ["lifetime_yuan", 0.0],
+            ["lifetime_shipping", 0.0],
+            ["lifetime_net_sales", 0.0]
+        ])
+
+# توابع کمکی دیتابیس گوگل شیت
+def get_settings():
+    sh = get_gsheet()
+    ws = sh.worksheet("settings")
+    records = ws.get_all_records()
+    return {str(r['key']): float(r['value']) if r['value'] else 0.0 for r in records}
+
+def update_setting(key, value, increment=False):
+    sh = get_gsheet()
+    ws = sh.worksheet("settings")
+    records = ws.get_all_records()
+    cell_row = None
+    current_val = 0.0
+    for i, r in enumerate(records):
+        if r['key'] == key:
+            cell_row = i + 2
+            current_val = float(r['value']) if r['value'] else 0.0
+            break
+    
+    final_value = current_val + value if increment else value
+    if cell_row:
+        ws.update_cell(cell_row, 2, final_value)
+    else:
+        ws.append_row([key, final_value])
+
+def get_products():
+    sh = get_gsheet()
+    ws = sh.worksheet("products")
+    records = ws.get_all_records()
+    if not records:
+        return pd.DataFrame(columns=["id", "name", "category", "status", "supplier_link", "digikala_link", "dkp_code", 
+                   "quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
+                   "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
+                   "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
+                   "carton_weight_kg", "net_sales_toman"])
+    df = pd.DataFrame(records)
+    return df
+
+def save_products(df):
+    sh = get_gsheet()
+    ws = sh.worksheet("products")
+    ws.clear()
+    df = df.fillna("")
+    data = [df.columns.values.tolist()] + df.values.tolist()
+    ws.update(range_name='A1', values=data)
 
 STATUS_OPTIONS = ["کالاهای درخواستی", "کالاهای ارسال شده", "کالاهای موجود"]
 
@@ -27,49 +118,10 @@ if not st.session_state["logged_in"]:
                 st.error("نام کاربری یا رمز عبور اشتباه است.")
     st.stop()
 
-# ================= دیتابیس و تنظیمات پایدار =================
-def init_db():
-    conn = sqlite3.connect('smart_excel.db')
-    cursor = conn.cursor()
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT, category TEXT, status TEXT, supplier_link TEXT, digikala_link TEXT, dkp_code TEXT,
-        quantity_needed INTEGER, length_cm REAL, width_cm REAL, height_cm REAL, pcs_per_carton INTEGER,
-        cbm_rate_toman REAL, buy_price_yuan REAL, digikala_price_toman REAL, tax_amount_toman REAL,
-        commission_percent REAL, processing_fee_toman REAL, pure_profit_toman REAL, profit_percent REAL,
-        carton_weight_kg REAL, net_sales_toman REAL
-    )
-    ''')
-    try:
-        cursor.execute("ALTER TABLE products ADD COLUMN carton_weight_kg REAL DEFAULT 0.0")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cursor.execute("ALTER TABLE products ADD COLUMN net_sales_toman REAL DEFAULT 0.0")
-    except sqlite3.OperationalError:
-        pass
-        
-    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value REAL)''')
-    
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_yuan', 0.0)")
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_shipping', 0.0)")
-    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_net_sales', 0.0)")
-    
-    cursor.execute("UPDATE products SET status = 'کالاهای درخواستی' WHERE status = 'جدید' OR status = 'نیاز به شارژ'")
-    cursor.execute("UPDATE products SET status = 'کالاهای موجود' WHERE status = 'موجودی کافی'")
-    
-    conn.commit()
-    conn.close()
-
+# راه‌اندازی دیتابیس
 init_db()
-
-conn = sqlite3.connect('smart_excel.db')
-cursor = conn.cursor()
-cursor.execute("SELECT value FROM settings WHERE key='yuan_rate'")
-row = cursor.fetchone()
-saved_yuan = row[0] if row else 9000.0
-conn.close()
+settings_data = get_settings()
+saved_yuan = settings_data.get('yuan_rate', 9000.0)
 
 def get_live_yuan():
     try:
@@ -106,43 +158,24 @@ with st.sidebar:
     if st.button("🔄 آپدیت آنلاین قیمت یوان"):
         live_price = get_live_yuan()
         if live_price:
-            conn = sqlite3.connect('smart_excel.db')
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('yuan_rate', ?)", (live_price,))
-            conn.commit()
-            conn.close()
+            update_setting('yuan_rate', live_price)
             st.success(f"آپدیت شد: {live_price:,} تومان")
             st.rerun()
         else:
             st.error("خطا در دریافت قیمت. سایت مبدا پاسخگو نیست.")
-            
-    conn = sqlite3.connect('smart_excel.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key='yuan_rate'")
-    row = cursor.fetchone()
-    saved_yuan = row[0] if row else 9000.0
-    conn.close()
 
     yuan_rate = st.number_input("نرخ روز یوان (تومان):", value=int(saved_yuan), step=100)
     if st.button("💾 ذخیره قیمت دستی"):
-        conn = sqlite3.connect('smart_excel.db')
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('yuan_rate', ?)", (yuan_rate,))
-        conn.commit()
-        conn.close()
+        update_setting('yuan_rate', yuan_rate)
         st.success("قیمت جدید ثبت شد!")
         st.rerun()
 
     st.markdown("---")
     st.subheader("تنظیمات آمار")
     if st.button("⚠️ صفر کردن کنتور انباشتی خرید"):
-        conn = sqlite3.connect('smart_excel.db')
-        cursor = conn.cursor()
-        cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_yuan'")
-        cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_shipping'")
-        cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_net_sales'")
-        conn.commit()
-        conn.close()
+        update_setting('lifetime_yuan', 0.0)
+        update_setting('lifetime_shipping', 0.0)
+        update_setting('lifetime_net_sales', 0.0)
         st.success("آمار کنتور صفر شد!")
         st.rerun()
 
@@ -185,7 +218,6 @@ def render_product_table(df_subset, tab_key):
         
     st.info("💡 برای ویرایش اطلاعات، روی سلول‌ها کلیک کنید. در پایان حتماً دکمه ذخیره را بزنید.")
     
-    # فرمت کردن ستون‌های نمایشی و غیرقابل ویرایش به صورت استرینگ دارای کاما
     display_df = df_subset.copy()
     display_df['cbm_rate_toman'] = display_df['cbm_rate_toman'].map('{:,.0f}'.format)
     display_df['digikala_price_toman'] = display_df['digikala_price_toman'].map('{:,.0f}'.format)
@@ -234,23 +266,11 @@ def render_product_table(df_subset, tab_key):
         }
     )
 
-    # گرفتن آمار کنتور از دیتابیس
-    conn = sqlite3.connect('smart_excel.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM settings WHERE key='lifetime_yuan'")
-    lt_yuan_row = cursor.fetchone()
-    lt_yuan = lt_yuan_row[0] if lt_yuan_row else 0.0
-    
-    cursor.execute("SELECT value FROM settings WHERE key='lifetime_shipping'")
-    lt_shipping_row = cursor.fetchone()
-    lt_shipping = lt_shipping_row[0] if lt_shipping_row else 0.0
-    
-    cursor.execute("SELECT value FROM settings WHERE key='lifetime_net_sales'")
-    lt_net_sales_row = cursor.fetchone()
-    lt_net_sales = lt_net_sales_row[0] if lt_net_sales_row else 0.0
-    conn.close()
+    lt_settings = get_settings()
+    lt_yuan = lt_settings.get('lifetime_yuan', 0.0)
+    lt_shipping = lt_settings.get('lifetime_shipping', 0.0)
+    lt_net_sales = lt_settings.get('lifetime_net_sales', 0.0)
 
-    # نمایش کنتور به شکل باکس‌های رنگی
     st.markdown(f"""
     <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px solid #198754; margin-top: 15px; margin-bottom: 20px; display: flex; justify-content: space-around; flex-wrap: wrap; gap: 15px;'>
         <div style='text-align: center; flex: 1; min-width: 200px;'>
@@ -269,8 +289,7 @@ def render_product_table(df_subset, tab_key):
     """, unsafe_allow_html=True)
 
     if st.button("💾 ذخیره تغییرات", key=f"save_btn_{tab_key}"):
-        conn = sqlite3.connect('smart_excel.db')
-        cursor = conn.cursor()
+        df_all = get_products()
         
         added_lt_yuan = 0.0
         added_lt_shipping = 0.0
@@ -279,13 +298,11 @@ def render_product_table(df_subset, tab_key):
         for _, row in edited_df.iterrows():
             orig_row = df_subset[df_subset['id'] == row['id']].iloc[0]
             
-            # حذف کاما و تبدیل به عدد برای ذخیره در دیتابیس
             cbm_clean = float(str(row['cbm_rate_toman']).replace(',', ''))
             dk_clean = float(str(row['digikala_price_toman']).replace(',', ''))
             tax_clean = float(str(row['tax_amount_toman']).replace(',', ''))
             proc_clean = float(str(row['processing_fee_toman']).replace(',', ''))
             
-            # ثبت در کنتور فقط در صورت تغییر وضعیت از درخواستی به ارسال شده یا موجود
             if orig_row['status'] == 'کالاهای درخواستی' and row['status'] in ['کالاهای ارسال شده', 'کالاهای موجود']:
                 added_lt_yuan += float(row['buy_price_yuan'] * row['quantity_needed'])
                 cbm = (row['length_cm'] * row['width_cm'] * row['height_cm']) / 1000000
@@ -295,28 +312,35 @@ def render_product_table(df_subset, tab_key):
                 dk_net_single = dk_clean - tax_clean - (dk_clean * (row['commission_percent'] / 100)) - proc_clean
                 added_lt_net_sales += float(dk_net_single * row['quantity_needed'])
 
-            cursor.execute('''
-                UPDATE products SET
-                name=?, category=?, status=?, supplier_link=?, digikala_link=?, dkp_code=?,
-                quantity_needed=?, length_cm=?, width_cm=?, height_cm=?, pcs_per_carton=?,
-                cbm_rate_toman=?, buy_price_yuan=?, digikala_price_toman=?, tax_amount_toman=?,
-                commission_percent=?, processing_fee_toman=?, carton_weight_kg=?
-                WHERE id=?
-            ''', (
-                row['name'], row['category'], row['status'], row['supplier_link'], row['digikala_link'], row['dkp_code'],
-                row['quantity_needed'], row['length_cm'], row['width_cm'], row['height_cm'], row['pcs_per_carton'],
-                cbm_clean, row['buy_price_yuan'], dk_clean, tax_clean,
-                row['commission_percent'], proc_clean, row['carton_weight_kg'], row['id']
-            ))
+            # آپدیت در دیتافریم کلی
+            idx = df_all.index[df_all['id'] == row['id']].tolist()
+            if idx:
+                i = idx[0]
+                df_all.at[i, 'name'] = row['name']
+                df_all.at[i, 'category'] = row['category']
+                df_all.at[i, 'status'] = row['status']
+                df_all.at[i, 'supplier_link'] = row['supplier_link']
+                df_all.at[i, 'digikala_link'] = row['digikala_link']
+                df_all.at[i, 'dkp_code'] = row['dkp_code']
+                df_all.at[i, 'quantity_needed'] = row['quantity_needed']
+                df_all.at[i, 'length_cm'] = row['length_cm']
+                df_all.at[i, 'width_cm'] = row['width_cm']
+                df_all.at[i, 'height_cm'] = row['height_cm']
+                df_all.at[i, 'pcs_per_carton'] = row['pcs_per_carton']
+                df_all.at[i, 'cbm_rate_toman'] = cbm_clean
+                df_all.at[i, 'buy_price_yuan'] = row['buy_price_yuan']
+                df_all.at[i, 'digikala_price_toman'] = dk_clean
+                df_all.at[i, 'tax_amount_toman'] = tax_clean
+                df_all.at[i, 'commission_percent'] = row['commission_percent']
+                df_all.at[i, 'processing_fee_toman'] = proc_clean
+                df_all.at[i, 'carton_weight_kg'] = row['carton_weight_kg']
             
-        # آپدیت مقادیر کنتور در دیتابیس
-        if added_lt_yuan > 0 or added_lt_shipping > 0 or added_lt_net_sales > 0:
-            cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_lt_yuan,))
-            cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_lt_shipping,))
-            cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_net_sales'", (added_lt_net_sales,))
+        save_products(df_all)
+        
+        if added_lt_yuan > 0: update_setting('lifetime_yuan', added_lt_yuan, True)
+        if added_lt_shipping > 0: update_setting('lifetime_shipping', added_lt_shipping, True)
+        if added_lt_net_sales > 0: update_setting('lifetime_net_sales', added_lt_net_sales, True)
             
-        conn.commit()
-        conn.close()
         st.success("تغییرات با موفقیت ذخیره شد!")
         st.rerun()
 
@@ -328,32 +352,28 @@ def render_product_table(df_subset, tab_key):
             selected_to_delete = col1.selectbox("کالای مورد نظر را برای حذف انتخاب کنید:", list(options.keys()), key=f"del_sel_{tab_key}")
             if col2.button("حذف دائمی", key=f"del_btn_{tab_key}"):
                 prod_id = options[selected_to_delete]
-                conn = sqlite3.connect('smart_excel.db')
-                c = conn.cursor()
-                c.execute("DELETE FROM products WHERE id=?", (prod_id,))
-                conn.commit()
-                conn.close()
+                df_all = get_products()
+                df_all = df_all[df_all['id'] != prod_id]
+                save_products(df_all)
                 st.success("کالا با موفقیت حذف شد!")
                 st.rerun()
 
 # ================= خواندن اطلاعات و تب‌ها =================
 tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل"])
 
-conn = sqlite3.connect('smart_excel.db')
-df = pd.read_sql_query("SELECT * FROM products", conn)
-conn.close()
+df = get_products()
 
 if not df.empty:
     df[['pure_profit_toman', 'profit_percent', 'net_sales_toman']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
-    df['cbm_per_carton'] = (df['length_cm'] * df['width_cm'] * df['height_cm']) / 1000000
+    df['cbm_per_carton'] = (pd.to_numeric(df['length_cm']) * pd.to_numeric(df['width_cm']) * pd.to_numeric(df['height_cm'])) / 1000000
     
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 گزارش مالی (زنده)")
     for status in STATUS_OPTIONS:
         df_status = df[df['status'] == status]
-        total_yuan = (df_status['buy_price_yuan'] * df_status['quantity_needed']).sum() if not df_status.empty else 0
-        total_profit = df_status['pure_profit_toman'].sum() if not df_status.empty else 0
-        total_net_sales = (df_status['net_sales_toman'] * df_status['quantity_needed']).sum() if not df_status.empty else 0
+        total_yuan = (pd.to_numeric(df_status['buy_price_yuan']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
+        total_profit = pd.to_numeric(df_status['pure_profit_toman']).sum() if not df_status.empty else 0
+        total_net_sales = (pd.to_numeric(df_status['net_sales_toman']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
         
         st.sidebar.markdown(f"**{status}**")
         st.sidebar.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
@@ -409,12 +429,22 @@ with tabs[4]:
         proc_fee = col17.number_input("هزینه پردازش (تومان)", min_value=0.0, value=5000.0)
         
         if st.form_submit_button("ثبت کالا"):
-            conn = sqlite3.connect('smart_excel.db')
-            cursor = conn.cursor()
-            cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg, net_sales_toman) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0)''', 
-                           (name, category, status, sup_link, dk_link, dkp, qty, length, width, height, pcs_carton, cbm_rate, buy_price, dk_price, tax, comm, proc_fee, weight))
+            df_all = get_products()
+            new_id = int(df_all['id'].max()) + 1 if not df_all.empty and 'id' in df_all.columns else 1
             
-            # افزودن به کنتور در صورت ثبت مستقیم کالای ارسال شده یا موجود
+            new_row = {
+                'id': new_id, 'name': name, 'category': category, 'status': status, 
+                'supplier_link': sup_link, 'digikala_link': dk_link, 'dkp_code': dkp, 
+                'quantity_needed': qty, 'length_cm': length, 'width_cm': width, 'height_cm': height, 
+                'pcs_per_carton': pcs_carton, 'cbm_rate_toman': cbm_rate, 'buy_price_yuan': buy_price, 
+                'digikala_price_toman': dk_price, 'tax_amount_toman': tax, 'commission_percent': comm, 
+                'processing_fee_toman': proc_fee, 'pure_profit_toman': 0, 'profit_percent': 0, 
+                'carton_weight_kg': weight, 'net_sales_toman': 0
+            }
+            
+            df_all = pd.concat([df_all, pd.DataFrame([new_row])], ignore_index=True)
+            save_products(df_all)
+            
             if status in ['کالاهای ارسال شده', 'کالاهای موجود']:
                 added_yuan = buy_price * qty
                 cbm = (length * width * height) / 1000000
@@ -422,12 +452,10 @@ with tabs[4]:
                 added_shipping = (cbm / pcs) * cbm_rate * qty
                 added_net_sales = (dk_price - tax - (dk_price * (comm / 100)) - proc_fee) * qty
                 
-                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_yuan,))
-                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_shipping,))
-                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_net_sales'", (added_net_sales,))
+                update_setting('lifetime_yuan', added_yuan, True)
+                update_setting('lifetime_shipping', added_shipping, True)
+                update_setting('lifetime_net_sales', added_net_sales, True)
                 
-            conn.commit()
-            conn.close()
             st.success("کالا ثبت شد!")
             st.rerun()
 
@@ -449,7 +477,6 @@ with tabs[5]:
                     total_profit += p['pure_profit_toman']
                     
             if suggested:
-                # فرمت کردن اعداد پیشنهادی در جدول
                 for i in range(len(suggested)):
                     suggested[i]["هزینه (یوان)"] = f'{suggested[i]["هزینه (یوان)"]:,.0f}'
                 st.table(pd.DataFrame(suggested))
@@ -482,12 +509,14 @@ with tabs[6]:
     if uploaded_file is not None and st.button("ثبت گروهی"):
         try:
             df_in = pd.read_excel(uploaded_file)
-            conn = sqlite3.connect('smart_excel.db')
-            cursor = conn.cursor()
+            df_all = get_products()
             
             added_lt_yuan = 0.0
             added_lt_shipping = 0.0
             added_lt_net_sales = 0.0
+            
+            new_rows = []
+            current_max_id = int(df_all['id'].max()) if not df_all.empty and 'id' in df_all.columns else 0
             
             for _, row in df_in.iterrows():
                 status_val = str(row.get('وضعیت', 'کالاهای درخواستی'))
@@ -499,7 +528,6 @@ with tabs[6]:
                 pcs_val = int(row.get('تعداد در کارتن', 1))
                 cbm_rate_val = float(row.get('هزینه CBM', 0))
                 
-                # محاسبه کنتور برای کالاهایی که با وضعیت ارسال شده یا موجود وارد سیستم میشوند
                 if status_val in ['کالاهای ارسال شده', 'کالاهای موجود']:
                     added_lt_yuan += buy_val * qty_val
                     cbm = (l_val * w_val * h_val) / 1000000
@@ -513,22 +541,41 @@ with tabs[6]:
                     dk_net = dk_price - tax - (dk_price * (comm / 100)) - proc_fee
                     added_lt_net_sales += dk_net * qty_val
 
-                cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg, net_sales_toman) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0)''', (
-                    str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), status_val, 
-                    str(row.get('لینک تامین', '')), str(row.get('لینک دیجی', '')), str(row.get('کد DKP', '')), 
-                    qty_val, l_val, w_val, h_val, 
-                    pcs_val, cbm_rate_val, buy_val, 
-                    float(row.get('قیمت فروش', 0)), float(row.get('مالیات', 0)), float(row.get('کمیسیون(%)', 0)), float(row.get('هزینه پردازش', 0)), float(row.get('وزن هر کارتن', 0))
-                ))
+                current_max_id += 1
+                new_rows.append({
+                    'id': current_max_id,
+                    'name': str(row.get('نام کالا', '')),
+                    'category': str(row.get('دسته بندی', '')),
+                    'status': status_val,
+                    'supplier_link': str(row.get('لینک تامین', '')),
+                    'digikala_link': str(row.get('لینک دیجی', '')),
+                    'dkp_code': str(row.get('کد DKP', '')),
+                    'quantity_needed': qty_val,
+                    'length_cm': l_val,
+                    'width_cm': w_val,
+                    'height_cm': h_val,
+                    'pcs_per_carton': pcs_val,
+                    'cbm_rate_toman': cbm_rate_val,
+                    'buy_price_yuan': buy_val,
+                    'digikala_price_toman': float(row.get('قیمت فروش', 0)),
+                    'tax_amount_toman': float(row.get('مالیات', 0)),
+                    'commission_percent': float(row.get('کمیسیون(%)', 0)),
+                    'processing_fee_toman': float(row.get('هزینه پردازش', 0)),
+                    'pure_profit_toman': 0,
+                    'profit_percent': 0,
+                    'carton_weight_kg': float(row.get('وزن هر کارتن', 0)),
+                    'net_sales_toman': 0
+                })
             
-            if added_lt_yuan > 0 or added_lt_shipping > 0 or added_lt_net_sales > 0:
-                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_lt_yuan,))
-                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_lt_shipping,))
-                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_net_sales'", (added_lt_net_sales,))
+            if new_rows:
+                df_all = pd.concat([df_all, pd.DataFrame(new_rows)], ignore_index=True)
+                save_products(df_all)
+            
+            if added_lt_yuan > 0: update_setting('lifetime_yuan', added_lt_yuan, True)
+            if added_lt_shipping > 0: update_setting('lifetime_shipping', added_lt_shipping, True)
+            if added_lt_net_sales > 0: update_setting('lifetime_net_sales', added_lt_net_sales, True)
                 
-            conn.commit()
-            conn.close()
             st.success("اکسل با موفقیت وارد شد!")
             st.rerun()
-        except:
-            st.error("خطا در ساختار فایل.")
+        except Exception as e:
+            st.error(f"خطا در ساختار فایل: {e}")
