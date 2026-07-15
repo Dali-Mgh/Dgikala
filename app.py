@@ -1,0 +1,252 @@
+import streamlit as st
+import sqlite3
+import pandas as pd
+import io
+import requests
+from bs4 import BeautifulSoup
+
+st.set_page_config(page_title="مدیریت هوشمند خرید", layout="wide")
+
+# ================= دیتابیس و تنظیمات پایدار =================
+def init_db():
+    conn = sqlite3.connect('smart_excel.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT, category TEXT, status TEXT, supplier_link TEXT, digikala_link TEXT, dkp_code TEXT,
+        quantity_needed INTEGER, length_cm REAL, width_cm REAL, height_cm REAL, pcs_per_carton INTEGER,
+        cbm_rate_toman REAL, buy_price_yuan REAL, digikala_price_toman REAL, tax_amount_toman REAL,
+        commission_percent REAL, processing_fee_toman REAL, pure_profit_toman REAL, profit_percent REAL
+    )
+    ''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value REAL)''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# خواندن نرخ یوان ذخیره شده
+conn = sqlite3.connect('smart_excel.db')
+cursor = conn.cursor()
+cursor.execute("SELECT value FROM settings WHERE key='yuan_rate'")
+row = cursor.fetchone()
+saved_yuan = row[0] if row else 9000.0
+conn.close()
+
+def get_live_yuan():
+    # 1. تلاش برای دریافت از API رایگان بازار (سریع‌تر و بدون بلاک شدن)
+    try:
+        res = requests.get('https://brsapi.ir/FreeTsetmcBourseApi/Api_Free_Gold_Currency_v2.json', timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            if 'currency' in data:
+                for item in data['currency']:
+                    if 'یوان' in item.get('name', ''):
+                        return int(item['price'] / 10) # تبدیل ریال به تومان
+    except:
+        pass
+
+    # 2. در صورت قطعی API، تلاش مجدد از سایت TGJU با هدرهای مبدل و قوی‌تر
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'fa,en-US;q=0.9,en;q=0.8',
+            'Referer': 'https://www.google.com/'
+        }
+        res = requests.get('https://www.tgju.org/profile/price_cny', headers=headers, timeout=8)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        price_tag = soup.find('span', {'data-col': 'info.last_trade.PDrCotVal'})
+        if price_tag:
+            price_rial = int(price_tag.text.replace(',', ''))
+            return int(price_rial / 10)
+    except:
+        pass
+        
+    return None
+
+with st.sidebar:
+    st.header("تنظیمات عمومی")
+    
+    if st.button("🔄 آپدیت آنلاین قیمت یوان"):
+        live_price = get_live_yuan()
+        if live_price:
+            saved_yuan = live_price
+            conn = sqlite3.connect('smart_excel.db')
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('yuan_rate', ?)", (live_price,))
+            conn.commit()
+            conn.close()
+            st.success(f"آپدیت شد: {live_price:,} تومان")
+            st.rerun()
+        else:
+            st.error("خطا در دریافت قیمت. سایت مبدا پاسخگو نیست.")
+            
+    yuan_rate = st.number_input("نرخ روز یوان (تومان):", value=int(saved_yuan), step=100)
+    if yuan_rate != saved_yuan:
+        conn = sqlite3.connect('smart_excel.db')
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('yuan_rate', ?)", (yuan_rate,))
+        conn.commit()
+        conn.close()
+        st.rerun()
+
+# ================= تابع محاسبه زنده و پویا =================
+def dynamic_calc(row, current_yuan):
+    try:
+        length = float(row['length_cm'])
+        width = float(row['width_cm'])
+        height = float(row['height_cm'])
+        pcs = int(row['pcs_per_carton'])
+        qty = int(row['quantity_needed'])
+        cbm_rate = float(row['cbm_rate_toman'])
+        price_yuan = float(row['buy_price_yuan'])
+        dk_price = float(row['digikala_price_toman'])
+        tax = float(row['tax_amount_toman'])
+        comm_pct = float(row['commission_percent'])
+        proc_fee = float(row['processing_fee_toman'])
+        
+        carton_cbm = (length * width * height) / 1000000
+        item_cbm = carton_cbm / pcs if pcs > 0 else 0
+        total_shipping_toman = (item_cbm * qty) * cbm_rate
+        total_buy_toman = (price_yuan * current_yuan * qty) + total_shipping_toman
+        dk_net_single = dk_price - tax - (dk_price * (comm_pct / 100)) - proc_fee
+        total_dk_revenue = dk_net_single * qty
+        net_profit = total_dk_revenue - total_buy_toman
+        profit_pct = (net_profit / total_buy_toman) * 100 if total_buy_toman > 0 else 0
+        return pd.Series([net_profit, profit_pct])
+    except:
+        return pd.Series([0.0, 0.0])
+
+# ================= تب‌ها =================
+tab1, tab2, tab3, tab4 = st.tabs(["📋 لیست کالاها", "➕ افزودن کالای جدید", "💡 پیشنهاد خرید (بودجه)", "📥 ورودی/خروجی اکسل"])
+
+with tab1:
+    conn = sqlite3.connect('smart_excel.db')
+    df = pd.read_sql_query("SELECT * FROM products", conn)
+    conn.close()
+    
+    if not df.empty:
+        # محاسبه لحظه ای سود بر اساس نرخ یوان فعلی
+        df[['pure_profit_toman', 'profit_percent']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
+        
+        display_df = df.drop(columns=['id']).copy()
+        display_df['pure_profit_toman'] = display_df['pure_profit_toman'].map('{:,.0f}'.format)
+        display_df['profit_percent'] = display_df['profit_percent'].map('{:.2f}%'.format)
+        
+        display_df.columns = [
+            'نام کالا', 'دسته بندی', 'وضعیت', 'لینک تامین', 'لینک دیجی', 'کد DKP',
+            'تعداد نیاز', 'طول (cm)', 'عرض (cm)', 'ارتفاع (cm)', 'تعداد در کارتن',
+            'هزینه CBM (تومان)', 'قیمت خرید(یوان)', 'قیمت فروش (تومان)', 'مالیات (تومان)',
+            'کمیسیون (%)', 'هزینه پردازش (تومان)', 'سود خالص کل (تومان)', 'حاشیه سود'
+        ]
+        st.dataframe(display_df, use_container_width=True)
+    else:
+        st.info("لیست کالاها خالی است.")
+
+with tab2:
+    with st.form("add_product_form"):
+        col1, col2, col3 = st.columns(3)
+        name = col1.text_input("نام کالا")
+        category = col2.text_input("دسته بندی")
+        status = col3.selectbox("وضعیت خرید", ["جدید", "نیاز به شارژ", "موجودی کافی"])
+        
+        col4, col5, col6 = st.columns(3)
+        sup_link = col4.text_input("لینک تامین کننده")
+        dk_link = col5.text_input("لینک دیجی کالا")
+        dkp = col6.text_input("کد DKP")
+        
+        col7, col8, col9, col10 = st.columns(4)
+        qty = col7.number_input("تعداد نیاز", min_value=1, value=10)
+        buy_price = col8.number_input("قیمت خرید (یوان)", min_value=0.0, value=10.0)
+        pcs_carton = col9.number_input("تعداد در کارتن", min_value=1, value=50)
+        cbm_rate = col10.number_input("هزینه هر CBM (تومان)", min_value=0.0, value=15000000.0)
+        
+        col11, col12, col13 = st.columns(3)
+        length = col11.number_input("طول (cm)", min_value=0.0, value=50.0)
+        width = col12.number_input("عرض (cm)", min_value=0.0, value=40.0)
+        height = col13.number_input("ارتفاع (cm)", min_value=0.0, value=30.0)
+        
+        col14, col15, col16, col17 = st.columns(4)
+        dk_price = col14.number_input("قیمت فروش (تومان)", min_value=0.0, value=200000.0)
+        tax = col15.number_input("مالیات (تومان)", min_value=0.0, value=0.0)
+        comm = col16.number_input("کمیسیون (%)", min_value=0.0, value=5.0)
+        proc_fee = col17.number_input("هزینه پردازش (تومان)", min_value=0.0, value=5000.0)
+        
+        if st.form_submit_button("ثبت کالا"):
+            conn = sqlite3.connect('smart_excel.db')
+            cursor = conn.cursor()
+            cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)''', 
+                           (name, category, status, sup_link, dk_link, dkp, qty, length, width, height, pcs_carton, cbm_rate, buy_price, dk_price, tax, comm, proc_fee))
+            conn.commit()
+            conn.close()
+            st.success("کالا ثبت شد!")
+            st.rerun()
+
+with tab3:
+    st.subheader("تخصیص هوشمند بودجه بر اساس سود لحظه‌ای")
+    budget = st.number_input("بودجه (یوان):", min_value=0, value=30000, step=1000)
+    
+    conn = sqlite3.connect('smart_excel.db')
+    df_budget = pd.read_sql_query("SELECT * FROM products WHERE status IN ('جدید', 'نیاز به شارژ')", conn)
+    conn.close()
+    
+    if not df_budget.empty:
+        # محاسبه سودهای بروز شده قبل از تخصیص بودجه
+        df_budget[['pure_profit_toman', 'profit_percent']] = df_budget.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
+        df_budget = df_budget.sort_values(by='profit_percent', ascending=False)
+        
+        suggested, rem_budget, total_profit = [], budget, 0
+        for _, p in df_budget.iterrows():
+            cost = p['buy_price_yuan'] * p['quantity_needed']
+            if rem_budget >= cost:
+                suggested.append({"نام کالا": p['name'], "تعداد": p['quantity_needed'], "هزینه (یوان)": cost, "درصد سود": f"{p['profit_percent']:.2f}%"})
+                rem_budget -= cost
+                total_profit += p['pure_profit_toman']
+                
+        if suggested:
+            st.table(pd.DataFrame(suggested))
+            st.success(f"باقیمانده بودجه: {rem_budget:,.0f} یوان")
+            st.info(f"مجموع سود خالص این خرید: {total_profit:,.0f} تومان")
+        else:
+            st.warning("با این بودجه پیشنهادی یافت نشد.")
+    else:
+        st.info("کالای واجد شرایطی برای خرید وجود ندارد.")
+
+with tab4:
+    st.subheader("📥 ورودی/خروجی اکسل")
+    sample_df = pd.DataFrame({
+        'نام کالا': ['نمونه'], 'دسته بندی': ['ورزشی'], 'وضعیت': ['جدید'], 'لینک تامین': [''], 
+        'لینک دیجی': [''], 'کد DKP': [''], 'تعداد': [10], 'قیمت خرید(یوان)': [50], 
+        'تعداد در کارتن': [20], 'هزینه CBM': [15000000], 'طول': [40], 'عرض': [30], 'ارتفاع': [20], 
+        'قیمت فروش': [500000], 'مالیات': [0], 'کمیسیون(%)': [5], 'هزینه پردازش': [5000]
+    })
+    
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        sample_df.to_excel(writer, index=False)
+    st.download_button("دانلود اکسل نمونه", data=buffer.getvalue(), file_name="template.xlsx", mime="application/vnd.ms-excel")
+    
+    st.markdown("---")
+    uploaded_file = st.file_uploader("فایل اکسل پر شده را آپلود کن", type=['xlsx'])
+    
+    if uploaded_file is not None and st.button("ثبت گروهی"):
+        try:
+            df_in = pd.read_excel(uploaded_file)
+            conn = sqlite3.connect('smart_excel.db')
+            cursor = conn.cursor()
+            for _, row in df_in.iterrows():
+                cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)''', (
+                    str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), str(row.get('وضعیت', 'جدید')), 
+                    str(row.get('لینک تامین', '')), str(row.get('لینک دیجی', '')), str(row.get('کد DKP', '')), 
+                    int(row.get('تعداد', 0)), float(row.get('طول', 0)), float(row.get('عرض', 0)), float(row.get('ارتفاع', 0)), 
+                    int(row.get('تعداد در کارتن', 1)), float(row.get('هزینه CBM', 0)), float(row.get('قیمت خرید(یوان)', 0)), 
+                    float(row.get('قیمت فروش', 0)), float(row.get('مالیات', 0)), float(row.get('کمیسیون(%)', 0)), float(row.get('هزینه پردازش', 0))
+                ))
+            conn.commit()
+            conn.close()
+            st.success("اکسل با موفقیت وارد شد!")
+            st.rerun()
+        except:
+            st.error("خطا در ساختار فایل.")
