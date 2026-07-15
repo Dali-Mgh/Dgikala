@@ -378,14 +378,38 @@ with tabs[6]:
             df_in = pd.read_excel(uploaded_file)
             conn = sqlite3.connect('smart_excel.db')
             cursor = conn.cursor()
+            
+            added_lt_yuan = 0.0
+            added_lt_shipping = 0.0
+            
             for _, row in df_in.iterrows():
+                status_val = str(row.get('وضعیت', 'کالاهای درخواستی'))
+                qty_val = int(row.get('تعداد', 0))
+                buy_val = float(row.get('قیمت خرید(یوان)', 0))
+                l_val = float(row.get('طول', 0))
+                w_val = float(row.get('عرض', 0))
+                h_val = float(row.get('ارتفاع', 0))
+                pcs_val = int(row.get('تعداد در کارتن', 1))
+                cbm_rate_val = float(row.get('هزینه CBM', 0))
+                
+                if status_val in ['کالاهای ارسال شده', 'کالاهای موجود']:
+                    added_lt_yuan += buy_val * qty_val
+                    cbm = (l_val * w_val * h_val) / 1000000
+                    pcs = pcs_val if pcs_val > 0 else 1
+                    added_lt_shipping += (cbm / pcs) * cbm_rate_val * qty_val
+
                 cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg, net_sales_toman) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0)''', (
-                    str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), str(row.get('وضعیت', 'کالاهای درخواستی')), 
+                    str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), status_val, 
                     str(row.get('لینک تامین', '')), str(row.get('لینک دیجی', '')), str(row.get('کد DKP', '')), 
-                    int(row.get('تعداد', 0)), float(row.get('طول', 0)), float(row.get('عرض', 0)), float(row.get('ارتفاع', 0)), 
-                    int(row.get('تعداد در کارتن', 1)), float(row.get('هزینه CBM', 0)), float(row.get('قیمت خرید(یوان)', 0)), 
+                    qty_val, l_val, w_val, h_val, 
+                    pcs_val, cbm_rate_val, buy_val, 
                     float(row.get('قیمت فروش', 0)), float(row.get('مالیات', 0)), float(row.get('کمیسیون(%)', 0)), float(row.get('هزینه پردازش', 0)), float(row.get('وزن هر کارتن', 0))
                 ))
+                
+            if added_lt_yuan > 0 or added_lt_shipping > 0:
+                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_lt_yuan,))
+                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_lt_shipping,))
+                
             conn.commit()
             conn.close()
             st.success("اکسل با موفقیت وارد شد!")
