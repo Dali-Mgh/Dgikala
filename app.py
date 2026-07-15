@@ -49,7 +49,11 @@ def init_db():
         cursor.execute("ALTER TABLE products ADD COLUMN net_sales_toman REAL DEFAULT 0.0")
     except sqlite3.OperationalError:
         pass
+        
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value REAL)''')
+    
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_yuan', 0.0)")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_shipping', 0.0)")
     
     cursor.execute("UPDATE products SET status = 'کالاهای درخواستی' WHERE status = 'جدید' OR status = 'نیاز به شارژ'")
     cursor.execute("UPDATE products SET status = 'کالاهای موجود' WHERE status = 'موجودی کافی'")
@@ -128,7 +132,20 @@ with st.sidebar:
         st.success("قیمت جدید ثبت شد!")
         st.rerun()
 
-# ================= توابع محاسباتی اصلاح شده =================
+    st.markdown("---")
+    st.subheader("تنظیمات آمار")
+    if st.button("⚠️ صفر کردن کنتور انباشتی خرید"):
+        conn = sqlite3.connect('smart_excel.db')
+        cursor = conn.cursor()
+        cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_yuan'")
+        cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_shipping'")
+        conn.commit()
+        conn.close()
+        st.success("آمار کنتور صفر شد!")
+        st.rerun()
+
+
+# ================= توابع محاسباتی =================
 def dynamic_calc(row, current_yuan):
     try:
         length = float(row['length_cm'])
@@ -143,20 +160,16 @@ def dynamic_calc(row, current_yuan):
         comm_pct = float(row['commission_percent'])
         proc_fee = float(row['processing_fee_toman'])
         
-        # 1. محاسبه هزینه تمام شده یک واحد
         carton_cbm = (length * width * height) / 1000000
         item_cbm = carton_cbm / pcs if pcs > 0 else 0
         item_shipping_toman = item_cbm * cbm_rate
         item_cost_toman = (price_yuan * current_yuan) + item_shipping_toman
         
-        # 2. خالص پرداختی دیجی‌کالا برای یک واحد
         item_dk_net = dk_price - tax - (dk_price * (comm_pct / 100)) - proc_fee
         
-        # 3. سود خالص هر واحد و کل
         item_profit = item_dk_net - item_cost_toman
         total_net_profit = item_profit * qty
         
-        # 4. حاشیه سود (سود تقسیم بر قیمت فروش دیجی‌کالا)
         profit_margin_pct = (item_profit / dk_price) * 100 if dk_price > 0 else 0
         
         return pd.Series([total_net_profit, profit_margin_pct, item_dk_net])
@@ -208,10 +221,49 @@ def render_product_table(df_subset, tab_key):
         }
     )
 
+    # گرفتن آمار کنتور از دیتابیس
+    conn = sqlite3.connect('smart_excel.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key='lifetime_yuan'")
+    lt_yuan_row = cursor.fetchone()
+    lt_yuan = lt_yuan_row[0] if lt_yuan_row else 0.0
+    
+    cursor.execute("SELECT value FROM settings WHERE key='lifetime_shipping'")
+    lt_shipping_row = cursor.fetchone()
+    lt_shipping = lt_shipping_row[0] if lt_shipping_row else 0.0
+    conn.close()
+
+    # نمایش کنتور به شکل باکس‌های رنگی
+    st.markdown(f"""
+    <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px solid #dc3545; margin-top: 15px; margin-bottom: 20px; display: flex; justify-content: space-around;'>
+        <div style='text-align: center;'>
+            <p style='margin: 0; color: #6c757d; font-size: 15px; font-weight: bold;'>مجموع کل خریدهای انباشتی (یوان)</p>
+            <h2 style='margin: 5px 0 0 0; color: #0d6efd;'>{lt_yuan:,.0f} ¥</h2>
+        </div>
+        <div style='text-align: center;'>
+            <p style='margin: 0; color: #6c757d; font-size: 15px; font-weight: bold;'>مجموع هزینه‌های انباشتی حمل و ترخیص (تومان)</p>
+            <h2 style='margin: 5px 0 0 0; color: #dc3545;'>{lt_shipping:,.0f} ₮</h2>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
     if st.button("💾 ذخیره تغییرات", key=f"save_btn_{tab_key}"):
         conn = sqlite3.connect('smart_excel.db')
         cursor = conn.cursor()
+        
+        added_lt_yuan = 0.0
+        added_lt_shipping = 0.0
+
         for _, row in edited_df.iterrows():
+            orig_row = df_subset[df_subset['id'] == row['id']].iloc[0]
+            
+            # ثبت در کنتور فقط در صورت تغییر وضعیت از درخواستی به ارسال شده یا موجود
+            if orig_row['status'] == 'کالاهای درخواستی' and row['status'] in ['کالاهای ارسال شده', 'کالاهای موجود']:
+                added_lt_yuan += float(row['buy_price_yuan'] * row['quantity_needed'])
+                cbm = (row['length_cm'] * row['width_cm'] * row['height_cm']) / 1000000
+                pcs = row['pcs_per_carton'] if row['pcs_per_carton'] > 0 else 1
+                added_lt_shipping += float((cbm / pcs) * row['cbm_rate_toman'] * row['quantity_needed'])
+
             cursor.execute('''
                 UPDATE products SET
                 name=?, category=?, status=?, supplier_link=?, digikala_link=?, dkp_code=?,
@@ -225,6 +277,12 @@ def render_product_table(df_subset, tab_key):
                 row['cbm_rate_toman'], row['buy_price_yuan'], row['digikala_price_toman'], row['tax_amount_toman'],
                 row['commission_percent'], row['processing_fee_toman'], row['carton_weight_kg'], row['id']
             ))
+            
+        # آپدیت مقادیر کنتور در دیتابیس
+        if added_lt_yuan > 0 or added_lt_shipping > 0:
+            cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_lt_yuan,))
+            cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_lt_shipping,))
+            
         conn.commit()
         conn.close()
         st.success("تغییرات با موفقیت ذخیره شد!")
@@ -258,7 +316,7 @@ if not df.empty:
     df['cbm_per_carton'] = (df['length_cm'] * df['width_cm'] * df['height_cm']) / 1000000
     
     st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 گزارش مالی")
+    st.sidebar.subheader("📊 گزارش مالی (زنده)")
     for status in STATUS_OPTIONS:
         df_status = df[df['status'] == status]
         total_yuan = (df_status['buy_price_yuan'] * df_status['quantity_needed']).sum() if not df_status.empty else 0
@@ -323,6 +381,16 @@ with tabs[4]:
             cursor = conn.cursor()
             cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg, net_sales_toman) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0)''', 
                            (name, category, status, sup_link, dk_link, dkp, qty, length, width, height, pcs_carton, cbm_rate, buy_price, dk_price, tax, comm, proc_fee, weight))
+            
+            # افزودن به کنتور در صورت ثبت مستقیم کالای ارسال شده یا موجود
+            if status in ['کالاهای ارسال شده', 'کالاهای موجود']:
+                added_yuan = buy_price * qty
+                cbm = (length * width * height) / 1000000
+                pcs = pcs_carton if pcs_carton > 0 else 1
+                added_shipping = (cbm / pcs) * cbm_rate * qty
+                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_yuan,))
+                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_shipping,))
+                
             conn.commit()
             conn.close()
             st.success("کالا ثبت شد!")
@@ -392,6 +460,7 @@ with tabs[6]:
                 pcs_val = int(row.get('تعداد در کارتن', 1))
                 cbm_rate_val = float(row.get('هزینه CBM', 0))
                 
+                # محاسبه کنتور برای کالاهایی که با وضعیت ارسال شده یا موجود وارد سیستم میشوند
                 if status_val in ['کالاهای ارسال شده', 'کالاهای موجود']:
                     added_lt_yuan += buy_val * qty_val
                     cbm = (l_val * w_val * h_val) / 1000000
@@ -405,7 +474,7 @@ with tabs[6]:
                     pcs_val, cbm_rate_val, buy_val, 
                     float(row.get('قیمت فروش', 0)), float(row.get('مالیات', 0)), float(row.get('کمیسیون(%)', 0)), float(row.get('هزینه پردازش', 0)), float(row.get('وزن هر کارتن', 0))
                 ))
-                
+            
             if added_lt_yuan > 0 or added_lt_shipping > 0:
                 cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_lt_yuan,))
                 cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_lt_shipping,))
