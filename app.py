@@ -55,23 +55,11 @@ def get_settings():
     records = ws.get_all_records()
     return {str(r['key']): float(r['value']) if r['value'] else 0.0 for r in records}
 
-def update_setting(key, value, increment=False):
+def save_settings(settings_dict):
     sh = get_gsheet()
     ws = sh.worksheet("settings")
-    records = ws.get_all_records()
-    cell_row = None
-    current_val = 0.0
-    for i, r in enumerate(records):
-        if r['key'] == key:
-            cell_row = i + 2
-            current_val = float(r['value']) if r['value'] else 0.0
-            break
-    
-    final_value = current_val + value if increment else value
-    if cell_row:
-        ws.update_cell(cell_row, 2, final_value)
-    else:
-        ws.append_row([key, final_value])
+    data = [["key", "value"]] + [[k, v] for k, v in settings_dict.items()]
+    ws.update(range_name='A1', values=data)
 
 def get_products():
     sh = get_gsheet()
@@ -137,8 +125,11 @@ if not st.session_state["logged_in"]:
                 st.error("نام کاربری یا رمز عبور اشتباه است.")
     st.stop()
 
-# راه‌اندازی دیتابیس
-init_db()
+# راه‌اندازی دیتابیس (فقط یک‌بار در هر سشن)
+if "db_initialized" not in st.session_state:
+    init_db()
+    st.session_state["db_initialized"] = True
+
 settings_data = get_settings()
 saved_yuan = settings_data.get('yuan_rate', 9000.0)
 
@@ -174,7 +165,8 @@ with st.sidebar:
     if st.button("🔄 آپدیت آنلاین قیمت یوان"):
         live_price = get_live_yuan()
         if live_price:
-            update_setting('yuan_rate', live_price)
+            settings_data['yuan_rate'] = live_price
+            save_settings(settings_data)
             st.success(f"آپدیت شد: {live_price:,} تومان")
             st.rerun()
         else:
@@ -182,16 +174,18 @@ with st.sidebar:
 
     yuan_rate = st.number_input("نرخ روز یوان (تومان):", value=int(saved_yuan), step=100)
     if st.button("💾 ذخیره قیمت دستی"):
-        update_setting('yuan_rate', yuan_rate)
+        settings_data['yuan_rate'] = yuan_rate
+        save_settings(settings_data)
         st.success("قیمت جدید ثبت شد!")
         st.rerun()
 
     st.markdown("---")
     st.subheader("تنظیمات آمار")
     if st.button("⚠️ صفر کردن کنتور انباشتی خرید"):
-        update_setting('lifetime_yuan', 0.0)
-        update_setting('lifetime_shipping', 0.0)
-        update_setting('lifetime_net_sales', 0.0)
+        settings_data['lifetime_yuan'] = 0.0
+        settings_data['lifetime_shipping'] = 0.0
+        settings_data['lifetime_net_sales'] = 0.0
+        save_settings(settings_data)
         st.success("آمار کنتور صفر شد!")
         st.rerun()
 
@@ -367,9 +361,12 @@ def render_product_table(df_subset, tab_key):
             
         save_products(df_all)
         
-        if added_lt_yuan > 0: update_setting('lifetime_yuan', added_lt_yuan, True)
-        if added_lt_shipping > 0: update_setting('lifetime_shipping', added_lt_shipping, True)
-        if added_lt_net_sales > 0: update_setting('lifetime_net_sales', added_lt_net_sales, True)
+        if added_lt_yuan > 0 or added_lt_shipping > 0 or added_lt_net_sales > 0:
+            lt_settings = get_settings()
+            lt_settings['lifetime_yuan'] = lt_settings.get('lifetime_yuan', 0.0) + added_lt_yuan
+            lt_settings['lifetime_shipping'] = lt_settings.get('lifetime_shipping', 0.0) + added_lt_shipping
+            lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + added_lt_net_sales
+            save_settings(lt_settings)
             
         st.success("تغییرات با موفقیت ذخیره شد!")
         st.rerun()
@@ -482,9 +479,11 @@ with tabs[5]:
                 added_shipping = (cbm / pcs) * cbm_rate * qty
                 added_net_sales = (dk_price - tax_calc - (dk_price * (comm / 100)) - proc_calc) * qty
                 
-                update_setting('lifetime_yuan', added_yuan, True)
-                update_setting('lifetime_shipping', added_shipping, True)
-                update_setting('lifetime_net_sales', added_net_sales, True)
+                lt_settings = get_settings()
+                lt_settings['lifetime_yuan'] = lt_settings.get('lifetime_yuan', 0.0) + added_yuan
+                lt_settings['lifetime_shipping'] = lt_settings.get('lifetime_shipping', 0.0) + added_shipping
+                lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + added_net_sales
+                save_settings(lt_settings)
                 
             st.success("کالا ثبت شد!")
             st.rerun()
@@ -607,9 +606,12 @@ with tabs[7]:
                 df_all = pd.concat([df_all, pd.DataFrame(new_rows)], ignore_index=True)
                 save_products(df_all)
             
-            if added_lt_yuan > 0: update_setting('lifetime_yuan', added_lt_yuan, True)
-            if added_lt_shipping > 0: update_setting('lifetime_shipping', added_lt_shipping, True)
-            if added_lt_net_sales > 0: update_setting('lifetime_net_sales', added_lt_net_sales, True)
+            if added_lt_yuan > 0 or added_lt_shipping > 0 or added_lt_net_sales > 0:
+                lt_settings = get_settings()
+                lt_settings['lifetime_yuan'] = lt_settings.get('lifetime_yuan', 0.0) + added_lt_yuan
+                lt_settings['lifetime_shipping'] = lt_settings.get('lifetime_shipping', 0.0) + added_lt_shipping
+                lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + added_lt_net_sales
+                save_settings(lt_settings)
                 
             st.success("اکسل با موفقیت وارد شد!")
             st.rerun()
