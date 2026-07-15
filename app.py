@@ -54,6 +54,7 @@ def init_db():
     
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_yuan', 0.0)")
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_shipping', 0.0)")
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('lifetime_net_sales', 0.0)")
     
     cursor.execute("UPDATE products SET status = 'کالاهای درخواستی' WHERE status = 'جدید' OR status = 'نیاز به شارژ'")
     cursor.execute("UPDATE products SET status = 'کالاهای موجود' WHERE status = 'موجودی کافی'")
@@ -139,6 +140,7 @@ with st.sidebar:
         cursor = conn.cursor()
         cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_yuan'")
         cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_shipping'")
+        cursor.execute("UPDATE settings SET value=0 WHERE key='lifetime_net_sales'")
         conn.commit()
         conn.close()
         st.success("آمار کنتور صفر شد!")
@@ -183,8 +185,15 @@ def render_product_table(df_subset, tab_key):
         
     st.info("💡 برای ویرایش اطلاعات، روی سلول‌ها کلیک کنید. در پایان حتماً دکمه ذخیره را بزنید.")
     
+    # فرمت کردن ستون‌های نمایشی و غیرقابل ویرایش به صورت استرینگ دارای کاما
+    display_df = df_subset.copy()
+    display_df['net_sales_toman'] = display_df['net_sales_toman'].map('{:,.0f}'.format)
+    display_df['pure_profit_toman'] = display_df['pure_profit_toman'].map('{:,.0f}'.format)
+    display_df['profit_percent'] = display_df['profit_percent'].map('{:.2f} %'.format)
+    display_df['cbm_per_carton'] = display_df['cbm_per_carton'].map('{:.4f}'.format)
+
     edited_df = st.data_editor(
-        df_subset,
+        display_df,
         key=f"editor_{tab_key}",
         use_container_width=True,
         hide_index=True,
@@ -208,16 +217,16 @@ def render_product_table(df_subset, tab_key):
             "height_cm": st.column_config.NumberColumn("ارتفاع (cm)"),
             "carton_weight_kg": st.column_config.NumberColumn("وزن هر کارتن (kg)"),
             "pcs_per_carton": st.column_config.NumberColumn("تعداد در کارتن"),
-            "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)", format="%d"),
+            "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)"),
             "buy_price_yuan": st.column_config.NumberColumn("قیمت خرید(یوان)"),
-            "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)", format="%d"),
-            "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)", format="%d"),
+            "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)"),
+            "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)"),
             "commission_percent": st.column_config.NumberColumn("کمیسیون (%)"),
-            "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)", format="%d"),
-            "net_sales_toman": st.column_config.NumberColumn("خالص فروش هر واحد", disabled=True, format="%d"),
-            "pure_profit_toman": st.column_config.NumberColumn("سود خالص کل (تومان)", disabled=True, format="%d"),
-            "profit_percent": st.column_config.NumberColumn("حاشیه سود", disabled=True, format="%.2f %%"),
-            "cbm_per_carton": st.column_config.NumberColumn("CBM هر کارتن", disabled=True, format="%.4f"),
+            "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)"),
+            "net_sales_toman": st.column_config.TextColumn("خالص فروش هر واحد", disabled=True),
+            "pure_profit_toman": st.column_config.TextColumn("سود خالص کل (تومان)", disabled=True),
+            "profit_percent": st.column_config.TextColumn("حاشیه سود", disabled=True),
+            "cbm_per_carton": st.column_config.TextColumn("CBM هر کارتن", disabled=True),
         }
     )
 
@@ -231,18 +240,26 @@ def render_product_table(df_subset, tab_key):
     cursor.execute("SELECT value FROM settings WHERE key='lifetime_shipping'")
     lt_shipping_row = cursor.fetchone()
     lt_shipping = lt_shipping_row[0] if lt_shipping_row else 0.0
+    
+    cursor.execute("SELECT value FROM settings WHERE key='lifetime_net_sales'")
+    lt_net_sales_row = cursor.fetchone()
+    lt_net_sales = lt_net_sales_row[0] if lt_net_sales_row else 0.0
     conn.close()
 
     # نمایش کنتور به شکل باکس‌های رنگی
     st.markdown(f"""
-    <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px solid #dc3545; margin-top: 15px; margin-bottom: 20px; display: flex; justify-content: space-around;'>
-        <div style='text-align: center;'>
-            <p style='margin: 0; color: #6c757d; font-size: 15px; font-weight: bold;'>مجموع کل خریدهای انباشتی (یوان)</p>
+    <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px solid #198754; margin-top: 15px; margin-bottom: 20px; display: flex; justify-content: space-around; flex-wrap: wrap; gap: 15px;'>
+        <div style='text-align: center; flex: 1; min-width: 200px;'>
+            <p style='margin: 0; color: #6c757d; font-size: 14px; font-weight: bold;'>مجموع خریدهای انباشتی (یوان)</p>
             <h2 style='margin: 5px 0 0 0; color: #0d6efd;'>{lt_yuan:,.0f} ¥</h2>
         </div>
-        <div style='text-align: center;'>
-            <p style='margin: 0; color: #6c757d; font-size: 15px; font-weight: bold;'>مجموع هزینه‌های انباشتی حمل و ترخیص (تومان)</p>
+        <div style='text-align: center; flex: 1; min-width: 200px;'>
+            <p style='margin: 0; color: #6c757d; font-size: 14px; font-weight: bold;'>مجموع هزینه‌های حمل (تومان)</p>
             <h2 style='margin: 5px 0 0 0; color: #dc3545;'>{lt_shipping:,.0f} ₮</h2>
+        </div>
+        <div style='text-align: center; flex: 1; min-width: 200px;'>
+            <p style='margin: 0; color: #6c757d; font-size: 14px; font-weight: bold;'>مبلغ خالص فروش کل (تومان)</p>
+            <h2 style='margin: 5px 0 0 0; color: #198754;'>{lt_net_sales:,.0f} ₮</h2>
         </div>
     </div>
     """, unsafe_allow_html=True)
@@ -253,6 +270,7 @@ def render_product_table(df_subset, tab_key):
         
         added_lt_yuan = 0.0
         added_lt_shipping = 0.0
+        added_lt_net_sales = 0.0
 
         for _, row in edited_df.iterrows():
             orig_row = df_subset[df_subset['id'] == row['id']].iloc[0]
@@ -263,6 +281,9 @@ def render_product_table(df_subset, tab_key):
                 cbm = (row['length_cm'] * row['width_cm'] * row['height_cm']) / 1000000
                 pcs = row['pcs_per_carton'] if row['pcs_per_carton'] > 0 else 1
                 added_lt_shipping += float((cbm / pcs) * row['cbm_rate_toman'] * row['quantity_needed'])
+                
+                dk_net_single = row['digikala_price_toman'] - row['tax_amount_toman'] - (row['digikala_price_toman'] * (row['commission_percent'] / 100)) - row['processing_fee_toman']
+                added_lt_net_sales += float(dk_net_single * row['quantity_needed'])
 
             cursor.execute('''
                 UPDATE products SET
@@ -279,9 +300,10 @@ def render_product_table(df_subset, tab_key):
             ))
             
         # آپدیت مقادیر کنتور در دیتابیس
-        if added_lt_yuan > 0 or added_lt_shipping > 0:
+        if added_lt_yuan > 0 or added_lt_shipping > 0 or added_lt_net_sales > 0:
             cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_lt_yuan,))
             cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_lt_shipping,))
+            cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_net_sales'", (added_lt_net_sales,))
             
         conn.commit()
         conn.close()
@@ -388,8 +410,11 @@ with tabs[4]:
                 cbm = (length * width * height) / 1000000
                 pcs = pcs_carton if pcs_carton > 0 else 1
                 added_shipping = (cbm / pcs) * cbm_rate * qty
+                added_net_sales = (dk_price - tax - (dk_price * (comm / 100)) - proc_fee) * qty
+                
                 cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_yuan,))
                 cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_shipping,))
+                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_net_sales'", (added_net_sales,))
                 
             conn.commit()
             conn.close()
@@ -414,6 +439,9 @@ with tabs[5]:
                     total_profit += p['pure_profit_toman']
                     
             if suggested:
+                # فرمت کردن اعداد پیشنهادی در جدول
+                for i in range(len(suggested)):
+                    suggested[i]["هزینه (یوان)"] = f'{suggested[i]["هزینه (یوان)"]:,.0f}'
                 st.table(pd.DataFrame(suggested))
                 st.success(f"باقیمانده بودجه: {rem_budget:,.0f} یوان")
                 st.info(f"مجموع سود خالص این خرید: {total_profit:,.0f} تومان")
@@ -449,6 +477,7 @@ with tabs[6]:
             
             added_lt_yuan = 0.0
             added_lt_shipping = 0.0
+            added_lt_net_sales = 0.0
             
             for _, row in df_in.iterrows():
                 status_val = str(row.get('وضعیت', 'کالاهای درخواستی'))
@@ -466,6 +495,13 @@ with tabs[6]:
                     cbm = (l_val * w_val * h_val) / 1000000
                     pcs = pcs_val if pcs_val > 0 else 1
                     added_lt_shipping += (cbm / pcs) * cbm_rate_val * qty_val
+                    
+                    dk_price = float(row.get('قیمت فروش', 0))
+                    tax = float(row.get('مالیات', 0))
+                    comm = float(row.get('کمیسیون(%)', 0))
+                    proc_fee = float(row.get('هزینه پردازش', 0))
+                    dk_net = dk_price - tax - (dk_price * (comm / 100)) - proc_fee
+                    added_lt_net_sales += dk_net * qty_val
 
                 cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg, net_sales_toman) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0)''', (
                     str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), status_val, 
@@ -475,9 +511,10 @@ with tabs[6]:
                     float(row.get('قیمت فروش', 0)), float(row.get('مالیات', 0)), float(row.get('کمیسیون(%)', 0)), float(row.get('هزینه پردازش', 0)), float(row.get('وزن هر کارتن', 0))
                 ))
             
-            if added_lt_yuan > 0 or added_lt_shipping > 0:
+            if added_lt_yuan > 0 or added_lt_shipping > 0 or added_lt_net_sales > 0:
                 cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_yuan'", (added_lt_yuan,))
                 cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_shipping'", (added_lt_shipping,))
+                cursor.execute("UPDATE settings SET value = value + ? WHERE key='lifetime_net_sales'", (added_lt_net_sales,))
                 
             conn.commit()
             conn.close()
