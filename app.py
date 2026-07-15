@@ -7,6 +7,24 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="مدیریت هوشمند خرید", layout="wide")
 
+# ================= سیستم ورود (Login) =================
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+
+if not st.session_state["logged_in"]:
+    st.title("🔐 ورود به سیستم")
+    with st.form("login_form"):
+        username = st.text_input("نام کاربری")
+        password = st.text_input("رمز عبور", type="password")
+        submit = st.form_submit_button("ورود")
+        if submit:
+            if username == "Admin" and password == "Sw.123456":
+                st.session_state["logged_in"] = True
+                st.rerun()
+            else:
+                st.error("نام کاربری یا رمز عبور اشتباه است.")
+    st.stop()
+
 # ================= دیتابیس و تنظیمات پایدار =================
 def init_db():
     conn = sqlite3.connect('smart_excel.db')
@@ -35,7 +53,6 @@ saved_yuan = row[0] if row else 9000.0
 conn.close()
 
 def get_live_yuan():
-    # 1. تلاش برای دریافت از API رایگان بازار (سریع‌تر و بدون بلاک شدن)
     try:
         res = requests.get('https://brsapi.ir/FreeTsetmcBourseApi/Api_Free_Gold_Currency_v2.json', timeout=5)
         if res.status_code == 200:
@@ -43,11 +60,10 @@ def get_live_yuan():
             if 'currency' in data:
                 for item in data['currency']:
                     if 'یوان' in item.get('name', ''):
-                        return int(item['price'] / 10) # تبدیل ریال به تومان
+                        return int(item['price'] / 10) 
     except:
         pass
 
-    # 2. در صورت قطعی API، تلاش مجدد از سایت TGJU با هدرهای مبدل و قوی‌تر
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -72,7 +88,6 @@ with st.sidebar:
     if st.button("🔄 آپدیت آنلاین قیمت یوان"):
         live_price = get_live_yuan()
         if live_price:
-            saved_yuan = live_price
             conn = sqlite3.connect('smart_excel.db')
             cursor = conn.cursor()
             cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('yuan_rate', ?)", (live_price,))
@@ -83,13 +98,22 @@ with st.sidebar:
         else:
             st.error("خطا در دریافت قیمت. سایت مبدا پاسخگو نیست.")
             
+    # بازخوانی مجدد از دیتابیس
+    conn = sqlite3.connect('smart_excel.db')
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key='yuan_rate'")
+    row = cursor.fetchone()
+    saved_yuan = row[0] if row else 9000.0
+    conn.close()
+
     yuan_rate = st.number_input("نرخ روز یوان (تومان):", value=int(saved_yuan), step=100)
-    if yuan_rate != saved_yuan:
+    if st.button("💾 ذخیره قیمت دستی"):
         conn = sqlite3.connect('smart_excel.db')
         cursor = conn.cursor()
         cursor.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('yuan_rate', ?)", (yuan_rate,))
         conn.commit()
         conn.close()
+        st.success("قیمت جدید ثبت شد!")
         st.rerun()
 
 # ================= تابع محاسبه زنده و پویا =================
@@ -128,20 +152,84 @@ with tab1:
     conn.close()
     
     if not df.empty:
-        # محاسبه لحظه ای سود بر اساس نرخ یوان فعلی
         df[['pure_profit_toman', 'profit_percent']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
+        df['cbm_per_carton'] = (df['length_cm'] * df['width_cm'] * df['height_cm']) / 1000000
         
-        display_df = df.drop(columns=['id']).copy()
-        display_df['pure_profit_toman'] = display_df['pure_profit_toman'].map('{:,.0f}'.format)
-        display_df['profit_percent'] = display_df['profit_percent'].map('{:.2f}%'.format)
+        st.info("💡 برای ویرایش اطلاعات، روی سلول‌ها کلیک کنید. در پایان حتماً دکمه ذخیره را بزنید.")
         
-        display_df.columns = [
-            'نام کالا', 'دسته بندی', 'وضعیت', 'لینک تامین', 'لینک دیجی', 'کد DKP',
-            'تعداد نیاز', 'طول (cm)', 'عرض (cm)', 'ارتفاع (cm)', 'تعداد در کارتن',
-            'هزینه CBM (تومان)', 'قیمت خرید(یوان)', 'قیمت فروش (تومان)', 'مالیات (تومان)',
-            'کمیسیون (%)', 'هزینه پردازش (تومان)', 'سود خالص کل (تومان)', 'حاشیه سود'
-        ]
-        st.dataframe(display_df, use_container_width=True)
+        # جدول قابل ویرایش (Data Editor)
+        edited_df = st.data_editor(
+            df,
+            use_container_width=True,
+            hide_index=True,
+            column_order=[
+                "id", "name", "category", "status", "dkp_code", "quantity_needed",
+                "pcs_per_carton", "cbm_per_carton", "cbm_rate_toman", "buy_price_yuan",
+                "digikala_price_toman", "commission_percent", "processing_fee_toman",
+                "pure_profit_toman", "profit_percent"
+            ],
+            column_config={
+                "id": st.column_config.NumberColumn("شناسه", disabled=True),
+                "name": "نام کالا",
+                "category": "دسته بندی",
+                "status": st.column_config.SelectboxColumn("وضعیت", options=["جدید", "نیاز به شارژ", "موجودی کافی"]),
+                "supplier_link": None, # پنهان کردن از نمایش
+                "digikala_link": None,
+                "dkp_code": "کد DKP",
+                "quantity_needed": st.column_config.NumberColumn("تعداد نیاز"),
+                "length_cm": None,
+                "width_cm": None,
+                "height_cm": None,
+                "pcs_per_carton": st.column_config.NumberColumn("تعداد در کارتن"),
+                "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)"),
+                "buy_price_yuan": st.column_config.NumberColumn("قیمت خرید(یوان)"),
+                "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)"),
+                "tax_amount_toman": None,
+                "commission_percent": st.column_config.NumberColumn("کمیسیون (%)"),
+                "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)"),
+                "pure_profit_toman": st.column_config.NumberColumn("سود خالص کل (تومان)", disabled=True),
+                "profit_percent": st.column_config.NumberColumn("حاشیه سود (%)", disabled=True),
+                "cbm_per_carton": st.column_config.NumberColumn("CBM هر کارتن", disabled=True),
+            }
+        )
+
+        if st.button("💾 ذخیره تغییرات جدول"):
+            conn = sqlite3.connect('smart_excel.db')
+            cursor = conn.cursor()
+            for _, row in edited_df.iterrows():
+                cursor.execute('''
+                    UPDATE products SET
+                    name=?, category=?, status=?, supplier_link=?, digikala_link=?, dkp_code=?,
+                    quantity_needed=?, length_cm=?, width_cm=?, height_cm=?, pcs_per_carton=?,
+                    cbm_rate_toman=?, buy_price_yuan=?, digikala_price_toman=?, tax_amount_toman=?,
+                    commission_percent=?, processing_fee_toman=?
+                    WHERE id=?
+                ''', (
+                    row['name'], row['category'], row['status'], row['supplier_link'], row['digikala_link'], row['dkp_code'],
+                    row['quantity_needed'], row['length_cm'], row['width_cm'], row['height_cm'], row['pcs_per_carton'],
+                    row['cbm_rate_toman'], row['buy_price_yuan'], row['digikala_price_toman'], row['tax_amount_toman'],
+                    row['commission_percent'], row['processing_fee_toman'], row['id']
+                ))
+            conn.commit()
+            conn.close()
+            st.success("تغییرات با موفقیت ذخیره شد!")
+            st.rerun()
+
+        st.markdown("---")
+        with st.expander("🗑️ حذف کالا از سیستم"):
+            col1, col2 = st.columns([3, 1])
+            options = {f"{row['id']} - {row['name']}": row['id'] for _, row in df.iterrows()}
+            selected_to_delete = col1.selectbox("کالای مورد نظر را برای حذف انتخاب کنید:", list(options.keys()))
+            
+            if col2.button("حذف دائمی"):
+                prod_id = options[selected_to_delete]
+                conn = sqlite3.connect('smart_excel.db')
+                c = conn.cursor()
+                c.execute("DELETE FROM products WHERE id=?", (prod_id,))
+                conn.commit()
+                conn.close()
+                st.success("کالا با موفقیت حذف شد!")
+                st.rerun()
     else:
         st.info("لیست کالاها خالی است.")
 
@@ -193,7 +281,6 @@ with tab3:
     conn.close()
     
     if not df_budget.empty:
-        # محاسبه سودهای بروز شده قبل از تخصیص بودجه
         df_budget[['pure_profit_toman', 'profit_percent']] = df_budget.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
         df_budget = df_budget.sort_values(by='profit_percent', ascending=False)
         
