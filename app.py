@@ -7,6 +7,8 @@ from bs4 import BeautifulSoup
 
 st.set_page_config(page_title="مدیریت هوشمند خرید", layout="wide")
 
+STATUS_OPTIONS = ["کالاهای درخواستی", "کالاهای ارسال شده", "کالاهای موجود"]
+
 # ================= سیستم ورود (Login) =================
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
@@ -42,14 +44,18 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE products ADD COLUMN carton_weight_kg REAL DEFAULT 0.0")
     except sqlite3.OperationalError:
-        pass # ستون از قبل وجود دارد
+        pass
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value REAL)''')
+    
+    # Update old statuses to new ones if they exist
+    cursor.execute("UPDATE products SET status = 'کالاهای درخواستی' WHERE status = 'جدید' OR status = 'نیاز به شارژ'")
+    cursor.execute("UPDATE products SET status = 'کالاهای موجود' WHERE status = 'موجودی کافی'")
+    
     conn.commit()
     conn.close()
 
 init_db()
 
-# خواندن نرخ یوان ذخیره شده
 conn = sqlite3.connect('smart_excel.db')
 cursor = conn.cursor()
 cursor.execute("SELECT value FROM settings WHERE key='yuan_rate'")
@@ -71,8 +77,8 @@ def get_live_yuan():
 
     try:
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'fa,en-US;q=0.9,en;q=0.8',
             'Referer': 'https://www.google.com/'
         }
@@ -84,7 +90,6 @@ def get_live_yuan():
             return int(price_rial / 10)
     except:
         pass
-        
     return None
 
 with st.sidebar:
@@ -103,7 +108,6 @@ with st.sidebar:
         else:
             st.error("خطا در دریافت قیمت. سایت مبدا پاسخگو نیست.")
             
-    # بازخوانی مجدد از دیتابیس
     conn = sqlite3.connect('smart_excel.db')
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM settings WHERE key='yuan_rate'")
@@ -121,7 +125,7 @@ with st.sidebar:
         st.success("قیمت جدید ثبت شد!")
         st.rerun()
 
-# ================= تابع محاسبه زنده و پویا =================
+# ================= توابع کمکی =================
 def dynamic_calc(row, current_yuan):
     try:
         length = float(row['length_cm'])
@@ -148,86 +152,79 @@ def dynamic_calc(row, current_yuan):
     except:
         return pd.Series([0.0, 0.0])
 
-# ================= تب‌ها =================
-tab1, tab2, tab3, tab4 = st.tabs(["📋 لیست کالاها", "➕ افزودن کالای جدید", "💡 پیشنهاد خرید (بودجه)", "📥 ورودی/خروجی اکسل"])
-
-with tab1:
-    conn = sqlite3.connect('smart_excel.db')
-    df = pd.read_sql_query("SELECT * FROM products", conn)
-    conn.close()
+def render_product_table(df_subset, tab_key):
+    if df_subset.empty:
+        st.info("لیست کالاها در این بخش خالی است.")
+        return
+        
+    st.info("💡 برای ویرایش اطلاعات، روی سلول‌ها کلیک کنید. در پایان حتماً دکمه ذخیره را بزنید.")
     
-    if not df.empty:
-        df[['pure_profit_toman', 'profit_percent']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
-        df['cbm_per_carton'] = (df['length_cm'] * df['width_cm'] * df['height_cm']) / 1000000
-        
-        st.info("💡 برای ویرایش اطلاعات، روی سلول‌ها کلیک کنید. در پایان حتماً دکمه ذخیره را بزنید.")
-        
-        # جدول قابل ویرایش (Data Editor)
-        edited_df = st.data_editor(
-            df,
-            use_container_width=True,
-            hide_index=True,
-            column_order=[
-                "id", "name", "category", "status", "dkp_code", "quantity_needed",
-                "pcs_per_carton", "cbm_per_carton", "cbm_rate_toman", "buy_price_yuan",
-                "digikala_price_toman", "commission_percent", "processing_fee_toman",
-                "pure_profit_toman", "profit_percent"
-            ],
-            column_config={
-                "id": st.column_config.NumberColumn("شناسه", disabled=True),
-                "name": "نام کالا",
-                "category": "دسته بندی",
-                "status": st.column_config.SelectboxColumn("وضعیت", options=["جدید", "نیاز به شارژ", "موجودی کافی"]),
-                "supplier_link": st.column_config.LinkColumn("لینک تامین", display_text="🔗 مشاهده سایت"),
-                "digikala_link": st.column_config.LinkColumn("لینک دیجی", display_text="🔗 مشاهده سایت"),
-                "dkp_code": "کد DKP",
-                "quantity_needed": st.column_config.NumberColumn("تعداد نیاز"),
-                "length_cm": st.column_config.NumberColumn("طول (cm)"),
-                "width_cm": st.column_config.NumberColumn("عرض (cm)"),
-                "height_cm": st.column_config.NumberColumn("ارتفاع (cm)"),
-                "carton_weight_kg": st.column_config.NumberColumn("وزن هر کارتن (kg)"),
-                "pcs_per_carton": st.column_config.NumberColumn("تعداد در کارتن"),
-                "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)"),
-                "buy_price_yuan": st.column_config.NumberColumn("قیمت خرید(یوان)"),
-                "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)"),
-                "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)"),
-                "commission_percent": st.column_config.NumberColumn("کمیسیون (%)"),
-                "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)"),
-                "pure_profit_toman": st.column_config.NumberColumn("سود خالص کل (تومان)", disabled=True),
-                "profit_percent": st.column_config.NumberColumn("حاشیه سود (%)", disabled=True),
-                "cbm_per_carton": st.column_config.NumberColumn("CBM هر کارتن", disabled=True),
-            }
-        )
+    edited_df = st.data_editor(
+        df_subset,
+        key=f"editor_{tab_key}",
+        use_container_width=True,
+        hide_index=True,
+        column_order=[
+            "id", "name", "category", "status", "dkp_code", "quantity_needed",
+            "pcs_per_carton", "cbm_per_carton", "cbm_rate_toman", "buy_price_yuan",
+            "digikala_price_toman", "commission_percent", "processing_fee_toman",
+            "pure_profit_toman", "profit_percent"
+        ],
+        column_config={
+            "id": st.column_config.NumberColumn("شناسه", disabled=True),
+            "name": "نام کالا",
+            "category": "دسته بندی",
+            "status": st.column_config.SelectboxColumn("وضعیت", options=STATUS_OPTIONS),
+            "supplier_link": st.column_config.LinkColumn("لینک تامین", display_text="🔗 سایت"),
+            "digikala_link": st.column_config.LinkColumn("لینک دیجی", display_text="🔗 سایت"),
+            "dkp_code": "کد DKP",
+            "quantity_needed": st.column_config.NumberColumn("تعداد نیاز"),
+            "length_cm": st.column_config.NumberColumn("طول (cm)"),
+            "width_cm": st.column_config.NumberColumn("عرض (cm)"),
+            "height_cm": st.column_config.NumberColumn("ارتفاع (cm)"),
+            "carton_weight_kg": st.column_config.NumberColumn("وزن هر کارتن (kg)"),
+            "pcs_per_carton": st.column_config.NumberColumn("تعداد در کارتن"),
+            "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)"),
+            "buy_price_yuan": st.column_config.NumberColumn("قیمت خرید(یوان)"),
+            "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)"),
+            "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)"),
+            "commission_percent": st.column_config.NumberColumn("کمیسیون (%)"),
+            "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)"),
+            "pure_profit_toman": st.column_config.NumberColumn("سود خالص کل (تومان)", disabled=True),
+            "profit_percent": st.column_config.NumberColumn("حاشیه سود (%)", disabled=True),
+            "cbm_per_carton": st.column_config.NumberColumn("CBM هر کارتن", disabled=True),
+        }
+    )
 
-        if st.button("💾 ذخیره تغییرات جدول"):
-            conn = sqlite3.connect('smart_excel.db')
-            cursor = conn.cursor()
-            for _, row in edited_df.iterrows():
-                cursor.execute('''
-                    UPDATE products SET
-                    name=?, category=?, status=?, supplier_link=?, digikala_link=?, dkp_code=?,
-                    quantity_needed=?, length_cm=?, width_cm=?, height_cm=?, pcs_per_carton=?,
-                    cbm_rate_toman=?, buy_price_yuan=?, digikala_price_toman=?, tax_amount_toman=?,
-                    commission_percent=?, processing_fee_toman=?, carton_weight_kg=?
-                    WHERE id=?
-                ''', (
-                    row['name'], row['category'], row['status'], row['supplier_link'], row['digikala_link'], row['dkp_code'],
-                    row['quantity_needed'], row['length_cm'], row['width_cm'], row['height_cm'], row['pcs_per_carton'],
-                    row['cbm_rate_toman'], row['buy_price_yuan'], row['digikala_price_toman'], row['tax_amount_toman'],
-                    row['commission_percent'], row['processing_fee_toman'], row['carton_weight_kg'], row['id']
-                ))
-            conn.commit()
-            conn.close()
-            st.success("تغییرات با موفقیت ذخیره شد!")
-            st.rerun()
+    if st.button("💾 ذخیره تغییرات", key=f"save_btn_{tab_key}"):
+        conn = sqlite3.connect('smart_excel.db')
+        cursor = conn.cursor()
+        for _, row in edited_df.iterrows():
+            cursor.execute('''
+                UPDATE products SET
+                name=?, category=?, status=?, supplier_link=?, digikala_link=?, dkp_code=?,
+                quantity_needed=?, length_cm=?, width_cm=?, height_cm=?, pcs_per_carton=?,
+                cbm_rate_toman=?, buy_price_yuan=?, digikala_price_toman=?, tax_amount_toman=?,
+                commission_percent=?, processing_fee_toman=?, carton_weight_kg=?
+                WHERE id=?
+            ''', (
+                row['name'], row['category'], row['status'], row['supplier_link'], row['digikala_link'], row['dkp_code'],
+                row['quantity_needed'], row['length_cm'], row['width_cm'], row['height_cm'], row['pcs_per_carton'],
+                row['cbm_rate_toman'], row['buy_price_yuan'], row['digikala_price_toman'], row['tax_amount_toman'],
+                row['commission_percent'], row['processing_fee_toman'], row['carton_weight_kg'], row['id']
+            ))
+        conn.commit()
+        conn.close()
+        st.success("تغییرات با موفقیت ذخیره شد!")
+        st.rerun()
 
-        st.markdown("---")
-        with st.expander("🗑️ حذف کالا از سیستم"):
-            col1, col2 = st.columns([3, 1])
-            options = {f"{row['id']} - {row['name']}": row['id'] for _, row in df.iterrows()}
-            selected_to_delete = col1.selectbox("کالای مورد نظر را برای حذف انتخاب کنید:", list(options.keys()))
-            
-            if col2.button("حذف دائمی"):
+    st.markdown("---")
+    with st.expander("🗑️ حذف کالا از سیستم"):
+        col1, col2 = st.columns([3, 1])
+        options = {f"{row['id']} - {row['name']}": row['id'] for _, row in df_subset.iterrows()}
+        if options:
+            selected_to_delete = col1.selectbox("کالای مورد نظر را برای حذف انتخاب کنید:", list(options.keys()), key=f"del_sel_{tab_key}")
+            if col2.button("حذف دائمی", key=f"del_btn_{tab_key}"):
                 prod_id = options[selected_to_delete]
                 conn = sqlite3.connect('smart_excel.db')
                 c = conn.cursor()
@@ -236,15 +233,35 @@ with tab1:
                 conn.close()
                 st.success("کالا با موفقیت حذف شد!")
                 st.rerun()
-    else:
-        st.info("لیست کالاها خالی است.")
 
-with tab2:
+# ================= تب‌ها =================
+tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل"])
+
+conn = sqlite3.connect('smart_excel.db')
+df = pd.read_sql_query("SELECT * FROM products", conn)
+conn.close()
+
+if not df.empty:
+    df[['pure_profit_toman', 'profit_percent']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
+    df['cbm_per_carton'] = (df['length_cm'] * df['width_cm'] * df['height_cm']) / 1000000
+    df['pure_profit_toman'] = df['pure_profit_toman'].map('{:,.0f}'.format)
+    df['profit_percent'] = df['profit_percent'].map('{:.2f}%'.format)
+
+with tabs[0]: 
+    render_product_table(df, "all")
+with tabs[1]: 
+    render_product_table(df[df['status'] == 'کالاهای درخواستی'], "req")
+with tabs[2]: 
+    render_product_table(df[df['status'] == 'کالاهای ارسال شده'], "sent")
+with tabs[3]: 
+    render_product_table(df[df['status'] == 'کالاهای موجود'], "stock")
+
+with tabs[4]:
     with st.form("add_product_form"):
         col1, col2, col3 = st.columns(3)
         name = col1.text_input("نام کالا")
         category = col2.text_input("دسته بندی")
-        status = col3.selectbox("وضعیت خرید", ["جدید", "نیاز به شارژ", "موجودی کافی"])
+        status = col3.selectbox("وضعیت خرید", STATUS_OPTIONS)
         
         col4, col5, col6 = st.columns(3)
         sup_link = col4.text_input("لینک تامین کننده")
@@ -279,39 +296,39 @@ with tab2:
             st.success("کالا ثبت شد!")
             st.rerun()
 
-with tab3:
-    st.subheader("تخصیص هوشمند بودجه بر اساس سود لحظه‌ای")
+with tabs[5]:
+    st.subheader("تخصیص هوشمند بودجه (مخصوص کالاهای درخواستی)")
     budget = st.number_input("بودجه (یوان):", min_value=0, value=30000, step=1000)
     
-    conn = sqlite3.connect('smart_excel.db')
-    df_budget = pd.read_sql_query("SELECT * FROM products WHERE status IN ('جدید', 'نیاز به شارژ')", conn)
-    conn.close()
-    
-    if not df_budget.empty:
-        df_budget[['pure_profit_toman', 'profit_percent']] = df_budget.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
-        df_budget = df_budget.sort_values(by='profit_percent', ascending=False)
-        
-        suggested, rem_budget, total_profit = [], budget, 0
-        for _, p in df_budget.iterrows():
-            cost = p['buy_price_yuan'] * p['quantity_needed']
-            if rem_budget >= cost:
-                suggested.append({"نام کالا": p['name'], "تعداد": p['quantity_needed'], "هزینه (یوان)": cost, "درصد سود": f"{p['profit_percent']:.2f}%"})
-                rem_budget -= cost
-                total_profit += p['pure_profit_toman']
-                
-        if suggested:
-            st.table(pd.DataFrame(suggested))
-            st.success(f"باقیمانده بودجه: {rem_budget:,.0f} یوان")
-            st.info(f"مجموع سود خالص این خرید: {total_profit:,.0f} تومان")
+    if not df.empty:
+        df_budget = df[df['status'] == 'کالاهای درخواستی'].copy()
+        if not df_budget.empty:
+            df_budget['profit_percent_float'] = df_budget['profit_percent'].str.rstrip('%').astype('float')
+            df_budget = df_budget.sort_values(by='profit_percent_float', ascending=False)
+            
+            suggested, rem_budget, total_profit = [], budget, 0
+            for _, p in df_budget.iterrows():
+                cost = p['buy_price_yuan'] * p['quantity_needed']
+                if rem_budget >= cost:
+                    suggested.append({"نام کالا": p['name'], "تعداد": p['quantity_needed'], "هزینه (یوان)": cost, "درصد سود": p['profit_percent']})
+                    rem_budget -= cost
+                    total_profit += float(p['pure_profit_toman'].replace(',', ''))
+                    
+            if suggested:
+                st.table(pd.DataFrame(suggested))
+                st.success(f"باقیمانده بودجه: {rem_budget:,.0f} یوان")
+                st.info(f"مجموع سود خالص این خرید: {total_profit:,.0f} تومان")
+            else:
+                st.warning("با این بودجه پیشنهادی یافت نشد.")
         else:
-            st.warning("با این بودجه پیشنهادی یافت نشد.")
+            st.info("هیچ 'کالای درخواستی' برای محاسبه بودجه وجود ندارد.")
     else:
-        st.info("کالای واجد شرایطی برای خرید وجود ندارد.")
+        st.info("لیست کالاها خالی است.")
 
-with tab4:
+with tabs[6]:
     st.subheader("📥 ورودی/خروجی اکسل")
     sample_df = pd.DataFrame({
-        'نام کالا': ['نمونه'], 'دسته بندی': ['ورزشی'], 'وضعیت': ['جدید'], 'لینک تامین': ['https://'], 
+        'نام کالا': ['نمونه'], 'دسته بندی': ['ورزشی'], 'وضعیت': ['کالاهای درخواستی'], 'لینک تامین': ['https://'], 
         'لینک دیجی': ['https://'], 'کد DKP': [''], 'تعداد': [10], 'قیمت خرید(یوان)': [50], 
         'تعداد در کارتن': [20], 'وزن هر کارتن': [10], 'هزینه CBM': [15000000], 'طول': [40], 'عرض': [30], 'ارتفاع': [20], 
         'قیمت فروش': [500000], 'مالیات': [0], 'کمیسیون(%)': [5], 'هزینه پردازش': [5000]
@@ -332,7 +349,7 @@ with tab4:
             cursor = conn.cursor()
             for _, row in df_in.iterrows():
                 cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)''', (
-                    str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), str(row.get('وضعیت', 'جدید')), 
+                    str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), str(row.get('وضعیت', 'کالاهای درخواستی')), 
                     str(row.get('لینک تامین', '')), str(row.get('لینک دیجی', '')), str(row.get('کد DKP', '')), 
                     int(row.get('تعداد', 0)), float(row.get('طول', 0)), float(row.get('عرض', 0)), float(row.get('ارتفاع', 0)), 
                     int(row.get('تعداد در کارتن', 1)), float(row.get('هزینه CBM', 0)), float(row.get('قیمت خرید(یوان)', 0)), 
