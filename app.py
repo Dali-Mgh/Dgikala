@@ -38,11 +38,15 @@ def init_db():
         quantity_needed INTEGER, length_cm REAL, width_cm REAL, height_cm REAL, pcs_per_carton INTEGER,
         cbm_rate_toman REAL, buy_price_yuan REAL, digikala_price_toman REAL, tax_amount_toman REAL,
         commission_percent REAL, processing_fee_toman REAL, pure_profit_toman REAL, profit_percent REAL,
-        carton_weight_kg REAL
+        carton_weight_kg REAL, net_sales_toman REAL
     )
     ''')
     try:
         cursor.execute("ALTER TABLE products ADD COLUMN carton_weight_kg REAL DEFAULT 0.0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE products ADD COLUMN net_sales_toman REAL DEFAULT 0.0")
     except sqlite3.OperationalError:
         pass
     cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value REAL)''')
@@ -124,7 +128,7 @@ with st.sidebar:
         st.success("قیمت جدید ثبت شد!")
         st.rerun()
 
-# ================= توابع کمکی =================
+# ================= توابع محاسباتی اصلاح شده =================
 def dynamic_calc(row, current_yuan):
     try:
         length = float(row['length_cm'])
@@ -139,17 +143,25 @@ def dynamic_calc(row, current_yuan):
         comm_pct = float(row['commission_percent'])
         proc_fee = float(row['processing_fee_toman'])
         
+        # 1. محاسبه هزینه تمام شده یک واحد
         carton_cbm = (length * width * height) / 1000000
         item_cbm = carton_cbm / pcs if pcs > 0 else 0
-        total_shipping_toman = (item_cbm * qty) * cbm_rate
-        total_buy_toman = (price_yuan * current_yuan * qty) + total_shipping_toman
-        dk_net_single = dk_price - tax - (dk_price * (comm_pct / 100)) - proc_fee
-        total_dk_revenue = dk_net_single * qty
-        net_profit = total_dk_revenue - total_buy_toman
-        profit_pct = (net_profit / total_buy_toman) * 100 if total_buy_toman > 0 else 0
-        return pd.Series([net_profit, profit_pct])
+        item_shipping_toman = item_cbm * cbm_rate
+        item_cost_toman = (price_yuan * current_yuan) + item_shipping_toman
+        
+        # 2. خالص پرداختی دیجی‌کالا برای یک واحد
+        item_dk_net = dk_price - tax - (dk_price * (comm_pct / 100)) - proc_fee
+        
+        # 3. سود خالص هر واحد و کل
+        item_profit = item_dk_net - item_cost_toman
+        total_net_profit = item_profit * qty
+        
+        # 4. حاشیه سود (سود تقسیم بر قیمت فروش دیجی‌کالا)
+        profit_margin_pct = (item_profit / dk_price) * 100 if dk_price > 0 else 0
+        
+        return pd.Series([total_net_profit, profit_margin_pct, item_dk_net])
     except:
-        return pd.Series([0.0, 0.0])
+        return pd.Series([0.0, 0.0, 0.0])
 
 def render_product_table(df_subset, tab_key):
     if df_subset.empty:
@@ -167,7 +179,7 @@ def render_product_table(df_subset, tab_key):
             "id", "name", "category", "status", "dkp_code", "quantity_needed",
             "pcs_per_carton", "cbm_per_carton", "cbm_rate_toman", "buy_price_yuan",
             "digikala_price_toman", "commission_percent", "processing_fee_toman",
-            "pure_profit_toman", "profit_percent"
+            "net_sales_toman", "pure_profit_toman", "profit_percent"
         ],
         column_config={
             "id": st.column_config.NumberColumn("شناسه", disabled=True),
@@ -183,15 +195,16 @@ def render_product_table(df_subset, tab_key):
             "height_cm": st.column_config.NumberColumn("ارتفاع (cm)"),
             "carton_weight_kg": st.column_config.NumberColumn("وزن هر کارتن (kg)"),
             "pcs_per_carton": st.column_config.NumberColumn("تعداد در کارتن"),
-            "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)"),
+            "cbm_rate_toman": st.column_config.NumberColumn("هزینه CBM (تومان)", format="%d"),
             "buy_price_yuan": st.column_config.NumberColumn("قیمت خرید(یوان)"),
-            "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)"),
-            "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)"),
+            "digikala_price_toman": st.column_config.NumberColumn("قیمت فروش (تومان)", format="%d"),
+            "tax_amount_toman": st.column_config.NumberColumn("مالیات (تومان)", format="%d"),
             "commission_percent": st.column_config.NumberColumn("کمیسیون (%)"),
-            "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)"),
-            "pure_profit_toman": st.column_config.NumberColumn("سود خالص کل (تومان)", disabled=True),
-            "profit_percent": st.column_config.NumberColumn("حاشیه سود (%)", disabled=True),
-            "cbm_per_carton": st.column_config.NumberColumn("CBM هر کارتن", disabled=True),
+            "processing_fee_toman": st.column_config.NumberColumn("هزینه پردازش (تومان)", format="%d"),
+            "net_sales_toman": st.column_config.NumberColumn("خالص فروش هر واحد", disabled=True, format="%d"),
+            "pure_profit_toman": st.column_config.NumberColumn("سود خالص کل (تومان)", disabled=True, format="%d"),
+            "profit_percent": st.column_config.NumberColumn("حاشیه سود", disabled=True, format="%.2f %%"),
+            "cbm_per_carton": st.column_config.NumberColumn("CBM هر کارتن", disabled=True, format="%.4f"),
         }
     )
 
@@ -241,10 +254,9 @@ df = pd.read_sql_query("SELECT * FROM products", conn)
 conn.close()
 
 if not df.empty:
-    df[['pure_profit_toman', 'profit_percent']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
+    df[['pure_profit_toman', 'profit_percent', 'net_sales_toman']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1)
     df['cbm_per_carton'] = (df['length_cm'] * df['width_cm'] * df['height_cm']) / 1000000
     
-    # اضافه کردن خلاصه مالی به سایدبار
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 گزارش مالی")
     for status in STATUS_OPTIONS:
@@ -255,10 +267,6 @@ if not df.empty:
         st.sidebar.markdown(f"**{status}**")
         st.sidebar.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
         st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
-    
-    # فرمت‌دهی برای نمایش در جدول
-    df['pure_profit_toman'] = df['pure_profit_toman'].map('{:,.0f}'.format)
-    df['profit_percent'] = df['profit_percent'].map('{:.2f}%'.format)
 
 with tabs[0]: 
     render_product_table(df, "all")
@@ -311,7 +319,7 @@ with tabs[4]:
         if st.form_submit_button("ثبت کالا"):
             conn = sqlite3.connect('smart_excel.db')
             cursor = conn.cursor()
-            cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)''', 
+            cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg, net_sales_toman) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0)''', 
                            (name, category, status, sup_link, dk_link, dkp, qty, length, width, height, pcs_carton, cbm_rate, buy_price, dk_price, tax, comm, proc_fee, weight))
             conn.commit()
             conn.close()
@@ -325,16 +333,15 @@ with tabs[5]:
     if not df.empty:
         df_budget = df[df['status'] == 'کالاهای درخواستی'].copy()
         if not df_budget.empty:
-            df_budget['profit_percent_float'] = df_budget['profit_percent'].str.rstrip('%').astype('float')
-            df_budget = df_budget.sort_values(by='profit_percent_float', ascending=False)
+            df_budget = df_budget.sort_values(by='profit_percent', ascending=False)
             
             suggested, rem_budget, total_profit = [], budget, 0
             for _, p in df_budget.iterrows():
                 cost = p['buy_price_yuan'] * p['quantity_needed']
                 if rem_budget >= cost:
-                    suggested.append({"نام کالا": p['name'], "تعداد": p['quantity_needed'], "هزینه (یوان)": cost, "درصد سود": p['profit_percent']})
+                    suggested.append({"نام کالا": p['name'], "تعداد": p['quantity_needed'], "هزینه (یوان)": cost, "درصد سود": f"{p['profit_percent']:.2f}%"})
                     rem_budget -= cost
-                    total_profit += float(p['pure_profit_toman'].replace(',', ''))
+                    total_profit += p['pure_profit_toman']
                     
             if suggested:
                 st.table(pd.DataFrame(suggested))
@@ -370,7 +377,7 @@ with tabs[6]:
             conn = sqlite3.connect('smart_excel.db')
             cursor = conn.cursor()
             for _, row in df_in.iterrows():
-                cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)''', (
+                cursor.execute('''INSERT INTO products (name, category, status, supplier_link, digikala_link, dkp_code, quantity_needed, length_cm, width_cm, height_cm, pcs_per_carton, cbm_rate_toman, buy_price_yuan, digikala_price_toman, tax_amount_toman, commission_percent, processing_fee_toman, pure_profit_toman, profit_percent, carton_weight_kg, net_sales_toman) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, 0)''', (
                     str(row.get('نام کالا', '')), str(row.get('دسته بندی', '')), str(row.get('وضعیت', 'کالاهای درخواستی')), 
                     str(row.get('لینک تامین', '')), str(row.get('لینک دیجی', '')), str(row.get('کد DKP', '')), 
                     int(row.get('تعداد', 0)), float(row.get('طول', 0)), float(row.get('عرض', 0)), float(row.get('ارتفاع', 0)), 
