@@ -10,6 +10,7 @@ st.set_page_config(page_title="مدیریت هوشمند خرید (Firestore)", 
 
 DEFAULT_COLUMNS = [
     "id", "name", "category", "status", "dkp_code", "quantity_needed",
+    "length_cm", "width_cm", "height_cm", "carton_weight_kg",
     "pcs_per_carton", "cbm_per_carton", "cbm_rate_toman", "item_shipping_toman", "buy_price_yuan",
     "digikala_price_toman", "commission_percent", "processing_fee_toman", "tax_amount_toman",
     "net_sales_toman", "pure_profit_toman", "profit_percent"
@@ -19,6 +20,8 @@ COLUMNS_MAP = {
     "id": "شناسه", "name": "نام کالا", "category": "دسته بندی", "status": "وضعیت",
     "supplier_link": "لینک تامین", "digikala_link": "لینک دیجی",
     "dkp_code": "کد DKP", "quantity_needed": "تعداد نیاز",
+    "length_cm": "طول (cm)", "width_cm": "عرض (cm)", "height_cm": "ارتفاع (cm)",
+    "carton_weight_kg": "وزن هر کارتن (kg)",
     "pcs_per_carton": "تعداد در کارتن", "cbm_per_carton": "CBM هر کارتن",
     "cbm_rate_toman": "هزینه CBM (تومان)", "item_shipping_toman": "هزینه حمل واحد",
     "buy_price_yuan": "قیمت خرید(یوان)", "digikala_price_toman": "قیمت فروش (تومان)",
