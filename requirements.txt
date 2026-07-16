@@ -1,6 +1,7 @@
+google-cloud-firestore
+google-oauth2
 streamlit
 pandas
-openpyxl
 requests
 beautifulsoup4
-gspread
+openpyxl
