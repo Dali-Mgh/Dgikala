@@ -15,7 +15,7 @@ def get_db():
         # خواندن کلید امنیتی از Secrets استریم‌لیت
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(creds_dict)
-        db = firestore.Client(credentials=creds, project_id=creds_dict["project_id"])
+        db = firestore.Client(credentials=creds, project=creds_dict["project_id"])
         return db
     except Exception as e:
         st.error(f"خطا در اتصال به دیتابیس Firestore. آیا کدهای امنیتی را در Secrets قرار داده‌اید؟ \n {e}")
