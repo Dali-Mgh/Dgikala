@@ -3,68 +3,52 @@ import pandas as pd
 import io
 import requests
 from bs4 import BeautifulSoup
-import gspread
+from google.cloud import firestore
+from google.oauth2 import service_account
 
-st.set_page_config(page_title="مدیریت هوشمند خرید", layout="wide")
+st.set_page_config(page_title="مدیریت هوشمند خرید (Firestore)", layout="wide")
 
-# ================= تنظیمات گوگل شیت =================
-SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1IniJrxUUYOqpEr8EP6DpOyoiAHxa3DabLgpszgdmHrk/edit?usp=sharing"
-
+# ================= تنظیمات دیتابیس Firestore =================
 @st.cache_resource
-def get_gsheet():
-    if SPREADSHEET_URL == "لینک_فایل_گوگل_شیت_خود_را_اینجا_قرار_دهید":
-        st.error("لطفا ابتدا لینک گوگل شیت را در متغیر SPREADSHEET_URL وارد کنید!")
-        st.stop()
+def get_db():
     try:
-        credentials = dict(st.secrets["gcp_service_account"])
-        gc = gspread.service_account_from_dict(credentials)
-        sh = gc.open_by_url(SPREADSHEET_URL)
-        return sh
+        # خواندن کلید امنیتی از Secrets استریم‌لیت
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(creds_dict)
+        db = firestore.Client(credentials=creds, project_id=creds_dict["project_id"])
+        return db
     except Exception as e:
-        st.error(f"خطا در اتصال به گوگل شیت. آیا ایمیل به فایل اضافه شده است؟ \n {e}")
+        st.error(f"خطا در اتصال به دیتابیس Firestore. آیا کدهای امنیتی را در Secrets قرار داده‌اید؟ \n {e}")
         st.stop()
 
 def init_db():
-    sh = get_gsheet()
-    try:
-        sh.worksheet("products")
-    except gspread.WorksheetNotFound:
-        ws_products = sh.add_worksheet(title="products", rows="100", cols="25")
-        headers = ["id", "name", "category", "status", "supplier_link", "digikala_link", "dkp_code", 
-                   "quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
-                   "cbm_rate_toman", "buy_price_yuan", "digikala_price_toman", "tax_amount_toman", 
-                   "commission_percent", "processing_fee_toman", "pure_profit_toman", "profit_percent", 
-                   "carton_weight_kg", "net_sales_toman"]
-        ws_products.append_row(headers)
-    
-    try:
-        sh.worksheet("settings")
-    except gspread.WorksheetNotFound:
-        ws_settings = sh.add_worksheet(title="settings", rows="10", cols="2")
-        ws_settings.append_row(["key", "value"])
-        ws_settings.append_rows([
-            ["yuan_rate", 9000.0],
-            ["lifetime_yuan", 0.0],
-            ["lifetime_shipping", 0.0],
-            ["lifetime_net_sales", 0.0]
-        ])
+    db = get_db()
+    # بررسی و ساخت داک تنظیمات در صورت عدم وجود
+    config_ref = db.collection("settings").document("global_config")
+    doc = config_ref.get()
+    if not doc.exists:
+        config_ref.set({
+            "yuan_rate": 9000.0,
+            "lifetime_yuan": 0.0,
+            "lifetime_shipping": 0.0,
+            "lifetime_net_sales": 0.0
+        })
 
 def get_settings():
-    sh = get_gsheet()
-    ws = sh.worksheet("settings")
-    records = ws.get_all_records()
-    return {str(r['key']): float(r['value']) if r['value'] else 0.0 for r in records}
+    db = get_db()
+    doc = db.collection("settings").document("global_config").get()
+    if doc.exists:
+        return doc.to_dict()
+    return {"yuan_rate": 9000.0, "lifetime_yuan": 0.0, "lifetime_shipping": 0.0, "lifetime_net_sales": 0.0}
 
 def save_settings(settings_dict):
-    sh = get_gsheet()
-    ws = sh.worksheet("settings")
-    data = [["key", "value"]] + [[k, v] for k, v in settings_dict.items()]
-    ws.update(range_name='A1', values=data)
+    db = get_db()
+    db.collection("settings").document("global_config").set(settings_dict)
 
 def get_products():
-    sh = get_gsheet()
-    ws = sh.worksheet("products")
-    records = ws.get_all_records()
+    db = get_db()
+    docs = db.collection("products").stream()
+    records = [doc.to_dict() for doc in docs]
     
     headers = ["id", "name", "category", "status", "supplier_link", "digikala_link", "dkp_code", 
                "quantity_needed", "length_cm", "width_cm", "height_cm", "pcs_per_carton", 
@@ -97,12 +81,37 @@ def get_products():
     return df
 
 def save_products(df):
-    sh = get_gsheet()
-    ws = sh.worksheet("products")
-    ws.clear()
-    df = df.fillna("")
-    data = [df.columns.values.tolist()] + df.values.tolist()
-    ws.update(range_name='A1', values=data)
+    db = get_db()
+    col_ref = db.collection("products")
+    
+    # دریافت لیست مستندات موجود جهت همگام‌سازی و حذف مواردی که دیلیت شده‌اند
+    docs = col_ref.stream()
+    existing_ids = {doc.id for doc in docs}
+    df_ids = {str(int(float(x))) for x in df['id'].tolist() if pd.notna(x)}
+    
+    # عملیات دسته‌ای (Batch) برای سرعت بی‌نظیر و عدم قطعی
+    batch = db.batch()
+    
+    # حذف ردیف‌های حذف شده
+    for doc_id in (existing_ids - df_ids):
+        batch.delete(col_ref.document(doc_id))
+        
+    # ثبت و آپدیت ردیف‌های موجود
+    for _, row in df.iterrows():
+        doc_id = str(int(float(row['id'])))
+        doc_ref = col_ref.document(doc_id)
+        row_dict = row.fillna("").to_dict()
+        
+        # تبدیل انواع داده‌های numpy به پایتون بومی جهت همخوانی با فایربیس
+        clean_dict = {}
+        for k, v in row_dict.items():
+            if hasattr(v, 'item'):
+                clean_dict[k] = v.item()
+            else:
+                clean_dict[k] = v
+        batch.set(doc_ref, clean_dict)
+        
+    batch.commit()
 
 STATUS_OPTIONS = ["کالاهای درخواستی", "کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
 ACTIVE_STATUSES = ["کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
@@ -125,7 +134,7 @@ if not st.session_state["logged_in"]:
                 st.error("نام کاربری یا رمز عبور اشتباه است.")
     st.stop()
 
-# راه‌اندازی دیتابیس (فقط یک‌بار در هر سشن)
+# راه‌اندازی پایگاه داده در سشن اول
 if "db_initialized" not in st.session_state:
     init_db()
     st.session_state["db_initialized"] = True
@@ -165,7 +174,7 @@ with st.sidebar:
     if st.button("🔄 آپدیت آنلاین قیمت یوان"):
         live_price = get_live_yuan()
         if live_price:
-            settings_data['yuan_rate'] = live_price
+            settings_data['yuan_rate'] = float(live_price)
             save_settings(settings_data)
             st.success(f"آپدیت شد: {live_price:,} تومان")
             st.rerun()
@@ -174,7 +183,7 @@ with st.sidebar:
 
     yuan_rate = st.number_input("نرخ روز یوان (تومان):", value=int(saved_yuan), step=100)
     if st.button("💾 ذخیره قیمت دستی"):
-        settings_data['yuan_rate'] = yuan_rate
+        settings_data['yuan_rate'] = float(yuan_rate)
         save_settings(settings_data)
         st.success("قیمت جدید ثبت شد!")
         st.rerun()
@@ -312,7 +321,6 @@ def render_product_table(df_subset, tab_key):
 
     if st.button("💾 ذخیره تغییرات", key=f"save_btn_{tab_key}"):
         df_all = get_products()
-        # تبدیل کل دیتافریم به آبجکت برای جلوگیری قطعی از خطاهای نوع داده (dtype) پانداس
         df_all = df_all.astype(object)
         
         added_lt_yuan = 0.0
@@ -386,14 +394,14 @@ def render_product_table(df_subset, tab_key):
                 st.rerun()
 
 # ================= خواندن اطلاعات و تب‌ها =================
-tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "🇨🇳 انبار چین", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل"])
-
 df = get_products()
 
+# اعمال محاسبات پویا در صورت عدم خالی بودن دیتابیس
 if not df.empty:
     df[['pure_profit_toman', 'profit_percent', 'net_sales_toman', 'processing_fee_toman', 'tax_amount_toman', 'item_shipping_toman']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1, result_type='expand')
     df['cbm_per_carton'] = (pd.to_numeric(df['length_cm']) * pd.to_numeric(df['width_cm']) * pd.to_numeric(df['height_cm'])) / 1000000
     
+    # سایدبار گزارش زنده
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 گزارش مالی (زنده)")
     for status in STATUS_OPTIONS:
@@ -407,16 +415,28 @@ if not df.empty:
         st.sidebar.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
         st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
 
+# بخش سرچ کالا (سراسری)
+st.subheader("🔍 جستجوی هوشمند")
+search_query = st.text_input("نام کالا یا کد DKP را وارد کنید:", key="global_search_input")
+
+# فیلتر کردن دیتافریم بر اساس سرچ کاربر
+df_filtered = df
+if search_query:
+    df_filtered = df[df['name'].str.contains(search_query, case=False, na=False) | 
+                     df['dkp_code'].astype(str).str.contains(search_query, case=False, na=False)]
+
+tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "🇨🇳 انبار چین", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل"])
+
 with tabs[0]: 
-    render_product_table(df, "all")
+    render_product_table(df_filtered, "all")
 with tabs[1]: 
-    render_product_table(df[df['status'] == 'کالاهای درخواستی'], "req")
+    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای درخواستی'], "req")
 with tabs[2]: 
-    render_product_table(df[df['status'] == 'کالاهای خریداری شده (انبار چین)'], "china")
+    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای خریداری شده (انبار چین)'], "china")
 with tabs[3]: 
-    render_product_table(df[df['status'] == 'کالاهای ارسال شده'], "sent")
+    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای ارسال شده'], "sent")
 with tabs[4]: 
-    render_product_table(df[df['status'] == 'کالاهای موجود'], "stock")
+    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای موجود'], "stock")
 
 with tabs[5]:
     with st.form("add_product_form"):
@@ -449,7 +469,7 @@ with tabs[5]:
         if st.form_submit_button("ثبت کالا"):
             df_all = get_products()
             
-            # محاسبه امن ID جدید
+            # محاسبه مطمئن شناسه جدید
             current_max_id = 0
             if not df_all.empty and 'id' in df_all.columns:
                 valid_ids = pd.to_numeric(df_all['id'], errors='coerce').dropna()
@@ -489,28 +509,132 @@ with tabs[5]:
             st.rerun()
 
 with tabs[6]:
-    st.subheader("تخصیص هوشمند بودجه (مخصوص کالاهای درخواستی)")
+    st.subheader("💡 تخصیص هوشمند بودجه (مخصوص کالاهای درخواستی)")
     budget = st.number_input("بودجه (یوان):", min_value=0, value=30000, step=1000)
     
     if not df.empty:
         df_budget = df[df['status'] == 'کالاهای درخواستی'].copy()
         if not df_budget.empty:
+            # مرتب‌سازی بر اساس حاشیه سود نزولی
             df_budget = df_budget.sort_values(by='profit_percent', ascending=False)
             
-            suggested, rem_budget, total_profit = [], budget, 0
+            suggested = []
+            rem_budget = budget
+            
             for _, p in df_budget.iterrows():
-                cost = p['buy_price_yuan'] * p['quantity_needed']
-                if rem_budget >= cost:
-                    suggested.append({"نام کالا": p['name'], "تعداد": p['quantity_needed'], "هزینه (یوان)": cost, "درصد سود": f"{p['profit_percent']:.2f}%"})
-                    rem_budget -= cost
-                    total_profit += p['pure_profit_toman']
-                    
+                buy_price = float(p['buy_price_yuan'])
+                qty_needed = float(p['quantity_needed'])
+                cost_full = buy_price * qty_needed
+                
+                # قانون ۱: زیر ۵۰۰۰ یوان (تغییر تعداد ممنوع - یا کل تعداد یا هیچی)
+                if cost_full <= 5000:
+                    if rem_budget >= cost_full:
+                        suggested_qty = qty_needed
+                        rem_budget -= cost_full
+                        suggested.append((p, suggested_qty))
+                # قانون ۲: بین ۵۰۰۱ تا ۱۰۰۰۰ یوان
+                elif cost_full <= 10000:
+                    if qty_needed < 100:
+                        # زیر ۱۰۰ عدد (تغییر تعداد ممنوع)
+                        if rem_budget >= cost_full:
+                            suggested_qty = qty_needed
+                            rem_budget -= cost_full
+                            suggested.append((p, suggested_qty))
+                    else:
+                        # بالای ۱۰۰ عدد (کاهش مجاز است)
+                        max_qty = int(rem_budget // buy_price)
+                        suggested_qty = min(qty_needed, max_qty)
+                        if suggested_qty > 0:
+                            rem_budget -= (suggested_qty * buy_price)
+                            suggested.append((p, suggested_qty))
+                # قانون ۳: بالای ۱۰۰۰۰ یوان (کاهش تعداد همواره مجاز است)
+                else:
+                    max_qty = int(rem_budget // buy_price)
+                    suggested_qty = min(qty_needed, max_qty)
+                    if suggested_qty > 0:
+                        rem_budget -= (suggested_qty * buy_price)
+                        suggested.append((p, suggested_qty))
+            
             if suggested:
-                for i in range(len(suggested)):
-                    suggested[i]["هزینه (یوان)"] = f'{suggested[i]["هزینه (یوان)"]:,.0f}'
-                st.table(pd.DataFrame(suggested))
-                st.success(f"باقیمانده بودجه: {rem_budget:,.0f} یوان")
-                st.info(f"مجموع سود خالص این خرید: {total_profit:,.0f} تومان")
+                suggested_data = []
+                total_cbm = 0.0
+                total_shipping = 0.0
+                total_processing = 0.0
+                total_tax = 0.0
+                total_yuan = 0.0
+                total_profit = 0.0
+                
+                for p, s_qty in suggested:
+                    cost_yuan = s_qty * p['buy_price_yuan']
+                    
+                    length = float(p['length_cm'])
+                    width = float(p['width_cm'])
+                    height = float(p['height_cm'])
+                    pcs = int(p['pcs_per_carton'])
+                    cbm_rate = float(p['cbm_rate_toman'])
+                    
+                    carton_cbm = (length * width * height) / 1000000
+                    item_cbm = carton_cbm / pcs if pcs > 0 else 0
+                    item_shipping = item_cbm * cbm_rate
+                    
+                    proc_fee, tax = calculate_fees(float(p['digikala_price_toman']), float(p['commission_percent']))
+                    comm_amount = float(p['digikala_price_toman']) * (float(p['commission_percent']) / 100.0)
+                    item_dk_net = float(p['digikala_price_toman']) - tax - comm_amount - proc_fee
+                    item_cost_toman = (float(p['buy_price_yuan']) * yuan_rate) + item_shipping
+                    item_profit = item_dk_net - item_cost_toman
+                    
+                    total_cbm += (item_cbm * s_qty)
+                    total_shipping += (item_shipping * s_qty)
+                    total_processing += (proc_fee * s_qty)
+                    total_tax += (tax * s_qty)
+                    total_yuan += cost_yuan
+                    total_profit += (item_profit * s_qty)
+                    
+                    suggested_data.append({
+                        "نام کالا": p['name'],
+                        "تعداد پیشنهادی": f"{s_qty:.0f} از {p['quantity_needed']:.0f}",
+                        "هزینه (یوان)": f"{cost_yuan:,.0f} ¥",
+                        "درصد سود": f"{p['profit_percent']:.2f}%",
+                        "CBM کل": f"{(item_cbm * s_qty):.4f}"
+                    })
+                
+                st.table(pd.DataFrame(suggested_data))
+                
+                # محاسبه هزینه نهایی تا تهران
+                total_yuan_toman = total_yuan * yuan_rate
+                total_landed_cost = total_yuan_toman + total_shipping + total_processing + total_tax
+                
+                st.markdown(f"""
+                <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px solid #0d6efd; margin-top: 15px;'>
+                    <h4 style='color: #0d6efd; margin-top: 0;'>📋 خلاصه برآورد مالی و ترابری بار پیشنهادی</h4>
+                    <div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;'>
+                        <div>
+                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>باقیمانده بودجه:</p>
+                            <strong style='font-size: 18px;'>{rem_budget:,.0f} ¥</strong>
+                        </div>
+                        <div>
+                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>مجموع حجم بار (CBM):</p>
+                            <strong style='font-size: 18px; color: #fd7e14;'>{total_cbm:.4f} CBM</strong>
+                        </div>
+                        <div>
+                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>هزینه حمل تا انبار تهران:</p>
+                            <strong style='font-size: 18px; color: #dc3545;'>{total_shipping:,.0f} تومان</strong>
+                        </div>
+                        <div>
+                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>هزینه‌های جانبی دیجی (پردازش و مالیات):</p>
+                            <strong style='font-size: 18px; color: #6f42c1;'>{(total_processing + total_tax):,.0f} تومان</strong>
+                        </div>
+                        <div>
+                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>سود خالص پیش‌بینی شده:</p>
+                            <strong style='font-size: 18px; color: #198754;'>{total_profit:,.0f} تومان</strong>
+                        </div>
+                        <div style='grid-column: 1 / -1; border-top: 1px solid #dee2e6; padding-top: 10px; margin-top: 5px;'>
+                            <p style='margin: 0; color: #6c757d; font-size: 14px;'>💰 <b>هزینه تمام‌شده کل ریالی (خرید یوان + حمل + هزینه‌های دیجی):</b></p>
+                            <strong style='font-size: 22px; color: #0d6efd;'>{total_landed_cost:,.0f} تومان</strong>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.warning("با این بودجه پیشنهادی یافت نشد.")
         else:
@@ -546,7 +670,6 @@ with tabs[7]:
             
             new_rows = []
             
-            # محاسبه امن ID جدید
             current_max_id = 0
             if not df_all.empty and 'id' in df_all.columns:
                 valid_ids = pd.to_numeric(df_all['id'], errors='coerce').dropna()
@@ -617,3 +740,42 @@ with tabs[7]:
             st.rerun()
         except Exception as e:
             st.error(f"خطا در ساختار فایل: {e}")
+```
+
+---
+
+### بخش سوم: تنظیمات نهایی در گیت‌هاب و استریم‌لیت
+
+پس از جایگزینی کد بالا در گیت‌هاب، **دو کار بسیار مهم و ساده** را باید انجام دهید:
+
+#### ۱. اضافه کردن کتابخانه جدید به `requirements.txt`
+فایل `requirements.txt` را در گیت‌هاب ویرایش کنید و مطمئن شوید که کتابخانه‌های زیر در آن وجود دارند (خطوط مربوط به `gspread` را نیز می‌توانید پاک کنید):
+```text
+google-cloud-firestore
+google-oauth2
+streamlit
+pandas
+requests
+beautifulsoup4
+openpyxl
+```
+
+#### ۲. قرار دادن اطلاعات دیتابیس در Secrets استریم‌لیت
+1. وارد پنل کاربری خود در **Streamlit Cloud** شوید.
+2. اپلیکیشن خود را پیدا کرده، روی دکمه سه نقطه کلیک کنید و **Settings** را انتخاب کنید.
+3. در منوی سمت چپ به بخش **Secrets** بروید.
+4. متن داخل کادر متنی را کاملاً پاک کنید و کد زیر را وارد کنید. (محتویات داخل پرانتز را دقیقاً از داخل فایل `.json` که در مرحله اول دانلود کردید کپی و جایگزین کنید):
+
+```toml
+[gcp_service_account]
+type = "service_account"
+project_id = "نام_پروژه_شما"
+private_key_id = "شناسه_کلید_خصوصی"
+private_key = "---BEGIN PRIVATE KEY---\nمحتوای_کلید_خصوصی_شما\n---END PRIVATE KEY---\n"
+client_email = "ایمیل_سرویس_اکانت_شما"
+client_id = "شناسه_کلاینت"
+auth_uri = "https://accounts.google.com/o/oauth2/auth"
+token_uri = "https://oauth2.googleapis.com/token"
+auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
+client_x509_cert_url = "لینک_مدرک_کلاینت"
+universe_domain = "googleapis.com"
