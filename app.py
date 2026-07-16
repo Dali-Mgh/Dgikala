@@ -8,6 +8,25 @@ from google.oauth2 import service_account
 
 st.set_page_config(page_title="مدیریت هوشمند خرید (Firestore)", layout="wide")
 
+DEFAULT_COLUMNS = [
+    "id", "name", "category", "status", "dkp_code", "quantity_needed",
+    "pcs_per_carton", "cbm_per_carton", "cbm_rate_toman", "item_shipping_toman", "buy_price_yuan",
+    "digikala_price_toman", "commission_percent", "processing_fee_toman", "tax_amount_toman",
+    "net_sales_toman", "pure_profit_toman", "profit_percent"
+]
+
+COLUMNS_MAP = {
+    "id": "شناسه", "name": "نام کالا", "category": "دسته بندی", "status": "وضعیت",
+    "supplier_link": "لینک تامین", "digikala_link": "لینک دیجی",
+    "dkp_code": "کد DKP", "quantity_needed": "تعداد نیاز",
+    "pcs_per_carton": "تعداد در کارتن", "cbm_per_carton": "CBM هر کارتن",
+    "cbm_rate_toman": "هزینه CBM (تومان)", "item_shipping_toman": "هزینه حمل واحد",
+    "buy_price_yuan": "قیمت خرید(یوان)", "digikala_price_toman": "قیمت فروش (تومان)",
+    "commission_percent": "کمیسیون (%)", "processing_fee_toman": "هزینه پردازش",
+    "tax_amount_toman": "ارزش افزوده", "net_sales_toman": "خالص فروش هر واحد",
+    "pure_profit_toman": "سود خالص کل (تومان)", "profit_percent": "حاشیه سود"
+}
+
 # ================= تنظیمات دیتابیس Firestore =================
 @st.cache_resource
 def get_db():
@@ -31,15 +50,19 @@ def init_db():
             "yuan_rate": 9000.0,
             "lifetime_yuan": 0.0,
             "lifetime_shipping": 0.0,
-            "lifetime_net_sales": 0.0
+            "lifetime_net_sales": 0.0,
+            "visible_columns": DEFAULT_COLUMNS
         })
 
 def get_settings():
     db = get_db()
     doc = db.collection("settings").document("global_config").get()
     if doc.exists:
-        return doc.to_dict()
-    return {"yuan_rate": 9000.0, "lifetime_yuan": 0.0, "lifetime_shipping": 0.0, "lifetime_net_sales": 0.0}
+        data = doc.to_dict()
+        if "visible_columns" not in data:
+            data["visible_columns"] = DEFAULT_COLUMNS
+        return data
+    return {"yuan_rate": 9000.0, "lifetime_yuan": 0.0, "lifetime_shipping": 0.0, "lifetime_net_sales": 0.0, "visible_columns": DEFAULT_COLUMNS}
 
 def save_settings(settings_dict):
     db = get_db()
@@ -189,6 +212,20 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
+    st.subheader("⚙️ تنظیمات ستون‌های جدول")
+    selected_cols = st.multiselect(
+        "ستون‌های نمایشی را انتخاب کنید:",
+        options=list(COLUMNS_MAP.keys()),
+        format_func=lambda x: COLUMNS_MAP[x],
+        default=settings_data.get('visible_columns', DEFAULT_COLUMNS)
+    )
+    if st.button("💾 ذخیره نمای ستون‌ها"):
+        settings_data['visible_columns'] = selected_cols
+        save_settings(settings_data)
+        st.success("تنظیمات ستون‌ها ذخیره شد!")
+        st.rerun()
+
+    st.markdown("---")
     st.subheader("تنظیمات آمار")
     if st.button("⚠️ صفر کردن کنتور انباشتی خرید"):
         settings_data['lifetime_yuan'] = 0.0
@@ -263,12 +300,7 @@ def render_product_table(df_subset, tab_key):
         key=f"editor_{tab_key}",
         use_container_width=True,
         hide_index=True,
-        column_order=[
-            "id", "name", "category", "status", "dkp_code", "quantity_needed",
-            "pcs_per_carton", "cbm_per_carton", "cbm_rate_toman", "item_shipping_toman", "buy_price_yuan",
-            "digikala_price_toman", "commission_percent", "processing_fee_toman", "tax_amount_toman",
-            "net_sales_toman", "pure_profit_toman", "profit_percent"
-        ],
+        column_order=settings_data.get('visible_columns', DEFAULT_COLUMNS),
         column_config={
             "id": st.column_config.NumberColumn("شناسه", disabled=True),
             "name": "نام کالا",
