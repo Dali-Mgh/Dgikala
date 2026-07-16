@@ -1,4 +1,11 @@
-# ... existing code ...
+# قانون ۳: بالای ۱۰۰۰۰ یوان (کاهش تعداد همواره مجاز است)
+                else:
+                    max_qty = int(rem_budget // buy_price)
+                    suggested_qty = min(qty_needed, max_qty)
+                    if suggested_qty > 0:
+                        rem_budget -= (suggested_qty * buy_price)
+                        suggested.append((p, suggested_qty))
+            
             if suggested:
                 suggested_data = []
                 total_cbm = 0.0
