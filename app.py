@@ -43,11 +43,13 @@ def get_db():
         st.error(f"خطا در اتصال به دیتابیس Firestore. آیا کدهای امنیتی را در Secrets قرار داده‌اید؟ \n {e}")
         st.stop()
 
+@st.cache_resource
 def init_db():
     db = get_db()
-    # بررسی و ساخت داک تنظیمات در صورت عدم وجود
     config_ref = db.collection("settings").document("global_config")
     doc = config_ref.get()
+    
+    # فقط اگر داکیومنت وجود ندارد، مقدار اولیه را ست کن
     if not doc.exists:
         config_ref.set({
             "yuan_rate": 9000.0,
@@ -56,7 +58,13 @@ def init_db():
             "lifetime_net_sales": 0.0,
             "visible_columns": DEFAULT_COLUMNS
         })
+    
+    # برای اینکه کش کار کند، باید مقداری را برگردانیم
+    return config_ref
 
+# هنگام استفاده در برنامه به این صورت فراخوانی کن:
+config_ref = init_db()
+doc = config_ref.get() # حالا این خط فقط یک بار اجرا می‌شود و بقیه دفعات از کش خوانده می‌شود
 def get_settings():
     db = get_db()
     doc = db.collection("settings").document("global_config").get()
