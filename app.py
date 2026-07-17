@@ -407,51 +407,13 @@ def render_product_table(df_subset, tab_key):
             lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + added_lt_net_sales
             save_settings(lt_settings)
             
-        st.success("تغییرات با موفقیت ذخیره شد!")
-        st.rerun()
-
-    st.markdown("---")
-    with st.expander("🗑️ حذف کالا از سیستم"):
-        col1, col2 = st.columns([3, 1])
-        options = {f"{row['id']} - {row['name']}": row['id'] for _, row in df_subset.iterrows()}
-        if options:
-            selected_to_delete = col1.selectbox("کالای مورد نظر را برای حذف انتخاب کنید:", list(options.keys()), key=f"del_sel_{tab_key}")
-            if col2.button("حذف دائمی", key=f"del_btn_{tab_key}"):
-                prod_id = options[selected_to_delete]
-                df_all = get_products()
-                df_all = df_all[df_all['id'] != prod_id]
-                save_products(df_all)
-                st.success("کالا با موفقیت حذف شد!")
-                st.rerun()
-
-df = get_products()
-
-if not df.empty:
-    df[['pure_profit_toman', 'profit_percent', 'net_sales_toman', 'processing_fee_toman', 'tax_amount_toman', 'item_shipping_toman']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1, result_type='expand')
-    df['cbm_per_carton'] = (pd.to_numeric(df['length_cm']) * pd.to_numeric(df['width_cm']) * pd.to_numeric(df['height_cm'])) / 1000000
-    
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 گزارش مالی (زنده)")
-    for status in STATUS_OPTIONS:
-        df_status = df[df['status'] == status]
-        total_yuan = (pd.to_numeric(df_status['buy_price_yuan']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
-        total_profit = pd.to_numeric(df_status['pure_profit_toman']).sum() if not df_status.empty else 0
-        total_net_sales = (pd.to_numeric(df_status['net_sales_toman']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
-        
-        st.sidebar.markdown(f"**{status}**")
-        st.sidebar.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
-        st.sidebar.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
-        st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
-
-st.subheader("🔍 جستجوی هوشمند")
-search_query = st.text_input("نام کالا یا کد DKP را وارد کنید:", key="global_search_input")
-
+# فیلتر کردن دیتافریم بر اساس سرچ کاربر
 df_filtered = df
 if search_query:
     df_filtered = df[df['name'].str.contains(search_query, case=False, na=False) | 
                      df['dkp_code'].astype(str).str.contains(search_query, case=False, na=False)]
 
-tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "🇨🇳 انبار چین", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل"])
+tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "🇨🇳 انبار چین", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل", "📈 تجمیعی DKP"])
 
 with tabs[0]: 
     render_product_table(df_filtered, "all")
@@ -465,32 +427,70 @@ with tabs[4]:
     render_product_table(df_filtered[df_filtered['status'] == 'کالاهای موجود'], "stock")
 
 with tabs[5]:
+    st.info("💡 برای ثبت مجدد کالای تکراری، کد DKP آن را وارد کنید تا اطلاعات به صورت خودکار کپی شود.")
+    dkp_to_copy = st.text_input("کد DKP برای کپی اطلاعات (اختیاری):", key="dkp_copy_input")
+    
+    # مقادیر پیش‌فرض
+    def_vals = {
+        'name': '', 'category': '', 'status': STATUS_OPTIONS[0],
+        'supplier_link': '', 'digikala_link': '', 'dkp_code': dkp_to_copy,
+        'quantity_needed': 10, 'buy_price_yuan': 10.0, 'pcs_per_carton': 50,
+        'cbm_rate_toman': 15000000.0, 'length_cm': 50.0, 'width_cm': 40.0,
+        'height_cm': 30.0, 'carton_weight_kg': 10.0, 'digikala_price_toman': 200000.0,
+        'commission_percent': 5.0
+    }
+    
+    # اگر کاربر کدی وارد کرد، اطلاعات را از دیتابیس می‌کشیم
+    if dkp_to_copy and not df.empty:
+        matched_rows = df[df['dkp_code'].astype(str) == dkp_to_copy]
+        if not matched_rows.empty:
+            last_record = matched_rows.iloc[-1]
+            def_vals.update({
+                'name': str(last_record.get('name', '')),
+                'category': str(last_record.get('category', '')),
+                'supplier_link': str(last_record.get('supplier_link', '')),
+                'digikala_link': str(last_record.get('digikala_link', '')),
+                'dkp_code': str(last_record.get('dkp_code', '')),
+                'buy_price_yuan': float(last_record.get('buy_price_yuan', 10.0)),
+                'pcs_per_carton': int(last_record.get('pcs_per_carton', 50)),
+                'cbm_rate_toman': float(last_record.get('cbm_rate_toman', 15000000.0)),
+                'length_cm': float(last_record.get('length_cm', 50.0)),
+                'width_cm': float(last_record.get('width_cm', 40.0)),
+                'height_cm': float(last_record.get('height_cm', 30.0)),
+                'carton_weight_kg': float(last_record.get('carton_weight_kg', 10.0)),
+                'digikala_price_toman': float(last_record.get('digikala_price_toman', 200000.0)),
+                'commission_percent': float(last_record.get('commission_percent', 5.0))
+            })
+            st.success(f"✅ اطلاعات «{def_vals['name']}» بارگذاری شد. فقط کافیست تعداد نیاز را وارد کنید!")
+        else:
+            st.warning("کالایی با این کد DKP یافت نشد.")
+
     with st.form("add_product_form"):
         col1, col2, col3 = st.columns(3)
-        name = col1.text_input("نام کالا")
-        category = col2.text_input("دسته بندی")
+        name = col1.text_input("نام کالا", value=def_vals['name'])
+        category = col2.text_input("دسته بندی", value=def_vals['category'])
         status = col3.selectbox("وضعیت خرید", STATUS_OPTIONS)
         
         col4, col5, col6 = st.columns(3)
-        sup_link = col4.text_input("لینک تامین کننده")
-        dk_link = col5.text_input("لینک دیجی کالا")
-        dkp = col6.text_input("کد DKP")
+        sup_link = col4.text_input("لینک تامین کننده", value=def_vals['supplier_link'])
+        dk_link = col5.text_input("لینک دیجی کالا", value=def_vals['digikala_link'])
+        dkp = col6.text_input("کد DKP", value=def_vals['dkp_code'])
         
         col7, col8, col9, col10 = st.columns(4)
-        qty = col7.number_input("تعداد نیاز", min_value=1, value=10)
-        buy_price = col8.number_input("قیمت خرید (یوان)", min_value=0.0, value=10.0)
-        pcs_carton = col9.number_input("تعداد در کارتن", min_value=1, value=50)
-        cbm_rate = col10.number_input("هزینه هر CBM (تومان)", min_value=0.0, value=15000000.0)
+        qty = col7.number_input("تعداد نیاز", min_value=1, value=int(def_vals['quantity_needed']))
+        buy_price = col8.number_input("قیمت خرید (یوان)", min_value=0.0, value=float(def_vals['buy_price_yuan']))
+        pcs_carton = col9.number_input("تعداد در کارتن", min_value=1, value=int(def_vals['pcs_per_carton']))
+        cbm_rate = col10.number_input("هزینه هر CBM (تومان)", min_value=0.0, value=float(def_vals['cbm_rate_toman']))
         
         col11, col12, col13, col_weight = st.columns(4)
-        length = col11.number_input("طول (cm)", min_value=0.0, value=50.0)
-        width = col12.number_input("عرض (cm)", min_value=0.0, value=40.0)
-        height = col13.number_input("ارتفاع (cm)", min_value=0.0, value=30.0)
-        weight = col_weight.number_input("وزن کارتن (kg)", min_value=0.0, value=10.0)
+        length = col11.number_input("طول (cm)", min_value=0.0, value=float(def_vals['length_cm']))
+        width = col12.number_input("عرض (cm)", min_value=0.0, value=float(def_vals['width_cm']))
+        height = col13.number_input("ارتفاع (cm)", min_value=0.0, value=float(def_vals['height_cm']))
+        weight = col_weight.number_input("وزن کارتن (kg)", min_value=0.0, value=float(def_vals['carton_weight_kg']))
         
         col14, col15 = st.columns(2)
-        dk_price = col14.number_input("قیمت فروش (تومان)", min_value=0.0, value=200000.0)
-        comm = col15.number_input("کمیسیون (%)", min_value=0.0, value=5.0)
+        dk_price = col14.number_input("قیمت فروش (تومان)", min_value=0.0, value=float(def_vals['digikala_price_toman']))
+        comm = col15.number_input("کمیسیون (%)", min_value=0.0, value=float(def_vals['commission_percent']))
         
         if st.form_submit_button("ثبت کالا"):
             df_all = get_products()
@@ -770,3 +770,36 @@ with tabs[7]:
             st.rerun()
         except Exception as e:
             st.error(f"خطا در ساختار فایل: {e}")
+
+with tabs[8]:
+    st.subheader("📈 آمار تجمیعی خرید کالاها بر اساس DKP")
+    st.info("این بخش مجموع خریدهای یکتای هر کالا را در طول تاریخچه سیستم نشان می‌دهد.")
+    
+    if not df.empty:
+        # فیلتر کردن ردیف‌هایی که DKP دارند
+        df_valid_dkp = df[df['dkp_code'].astype(str).str.strip() != '']
+        
+        if not df_valid_dkp.empty:
+            # تجمیع بر اساس DKP
+            grouped = df_valid_dkp.groupby('dkp_code').agg(
+                name=('name', 'first'),
+                total_qty=('quantity_needed', 'sum'),
+                order_count=('id', 'count')
+            ).reset_index()
+
+            # مرتب‌سازی نزولی بر اساس تعداد
+            grouped = grouped.sort_values(by='total_qty', ascending=False)
+            
+            # تغییر نام ستون‌ها برای نمایش زیبا
+            grouped = grouped.rename(columns={
+                'dkp_code': 'کد DKP',
+                'name': 'نام کالا',
+                'total_qty': 'مجموع تعداد سفارش داده شده',
+                'order_count': 'تعداد دفعات ثبت سفارش'
+            })
+            
+            st.dataframe(grouped, use_container_width=True, hide_index=True)
+        else:
+            st.info("کالایی با کد DKP ثبت نشده است.")
+    else:
+        st.info("لیست کالاها خالی است.")
