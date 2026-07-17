@@ -104,7 +104,10 @@ def get_products():
     for col in str_cols:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str)
-            
+            # حذف کردن 0. از انتهای کدهای DKP
+            if col == "dkp_code":
+                df[col] = df[col].apply(lambda x: x[:-2] if x.endswith('.0') else x)
+                
     return df
 
 def save_products(df):
@@ -761,6 +764,10 @@ with tabs[7]:
                 dk_price = float(row.get('قیمت فروش', 0))
                 comm = float(row.get('کمیسیون(%)', 0))
                 
+                # اصلاح کد DKP در زمان آپلود اکسل
+                raw_dkp = str(row.get('کد DKP', ''))
+                clean_dkp = raw_dkp[:-2] if raw_dkp.endswith('.0') else raw_dkp
+                
                 proc_calc, tax_calc = calculate_fees(dk_price, comm)
                 
                 if status_val in ACTIVE_STATUSES:
@@ -780,7 +787,7 @@ with tabs[7]:
                     'status': status_val,
                     'supplier_link': str(row.get('لینک تامین', '')),
                     'digikala_link': str(row.get('لینک دیجی', '')),
-                    'dkp_code': str(row.get('کد DKP', '')),
+                    'dkp_code': clean_dkp,
                     'quantity_needed': qty_val,
                     'length_cm': l_val,
                     'width_cm': w_val,
@@ -816,10 +823,11 @@ with tabs[7]:
 
 with tabs[8]:
     st.subheader("📈 آمار تجمیعی خرید کالاها بر اساس DKP")
-    st.info("این بخش مجموع خریدهای یکتای هر کالا را در طول تاریخچه سیستم نشان می‌دهد.")
+    st.info("این بخش مجموع خریدهای یکتای هر کالا را نشان می‌دهد (کالاهای درخواستی محاسبه نمی‌شوند).")
     
     if not df.empty:
-        df_valid_dkp = df[df['dkp_code'].astype(str).str.strip() != '']
+        # فقط کالاهایی که کد DKP دارند و وضعیتشان "انبار چین"، "ارسال شده" یا "موجود" است محاسبه می‌شوند
+        df_valid_dkp = df[(df['dkp_code'].astype(str).str.strip() != '') & (df['status'].isin(ACTIVE_STATUSES))]
         
         if not df_valid_dkp.empty:
             grouped = df_valid_dkp.groupby('dkp_code').agg(
