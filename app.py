@@ -407,6 +407,49 @@ def render_product_table(df_subset, tab_key):
             lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + added_lt_net_sales
             save_settings(lt_settings)
             
+        st.success("تغییرات با موفقیت ذخیره شد!")
+        st.rerun()
+
+    st.markdown("---")
+    with st.expander("🗑️ حذف کالا از سیستم"):
+        col1, col2 = st.columns([3, 1])
+        options = {f"{row['id']} - {row['name']}": row['id'] for _, row in df_subset.iterrows()}
+        if options:
+            selected_to_delete = col1.selectbox("کالای مورد نظر را برای حذف انتخاب کنید:", list(options.keys()), key=f"del_sel_{tab_key}")
+            if col2.button("حذف دائمی", key=f"del_btn_{tab_key}"):
+                prod_id = options[selected_to_delete]
+                df_all = get_products()
+                df_all = df_all[df_all['id'] != prod_id]
+                save_products(df_all)
+                st.success("کالا با موفقیت حذف شد!")
+                st.rerun()
+
+# ================= خواندن اطلاعات و تب‌ها =================
+df = get_products()
+
+# اعمال محاسبات پویا در صورت عدم خالی بودن دیتابیس
+if not df.empty:
+    df[['pure_profit_toman', 'profit_percent', 'net_sales_toman', 'processing_fee_toman', 'tax_amount_toman', 'item_shipping_toman']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1, result_type='expand')
+    df['cbm_per_carton'] = (pd.to_numeric(df['length_cm']) * pd.to_numeric(df['width_cm']) * pd.to_numeric(df['height_cm'])) / 1000000
+    
+    # سایدبار گزارش زنده
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 گزارش مالی (زنده)")
+    for status in STATUS_OPTIONS:
+        df_status = df[df['status'] == status]
+        total_yuan = (pd.to_numeric(df_status['buy_price_yuan']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
+        total_profit = pd.to_numeric(df_status['pure_profit_toman']).sum() if not df_status.empty else 0
+        total_net_sales = (pd.to_numeric(df_status['net_sales_toman']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
+        
+        st.sidebar.markdown(f"**{status}**")
+        st.sidebar.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
+        st.sidebar.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
+        st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
+
+# بخش سرچ کالا (سراسری)
+st.subheader("🔍 جستجوی هوشمند")
+search_query = st.text_input("نام کالا یا کد DKP را وارد کنید:", key="global_search_input")
+
 # فیلتر کردن دیتافریم بر اساس سرچ کاربر
 df_filtered = df
 if search_query:
@@ -776,21 +819,17 @@ with tabs[8]:
     st.info("این بخش مجموع خریدهای یکتای هر کالا را در طول تاریخچه سیستم نشان می‌دهد.")
     
     if not df.empty:
-        # فیلتر کردن ردیف‌هایی که DKP دارند
         df_valid_dkp = df[df['dkp_code'].astype(str).str.strip() != '']
         
         if not df_valid_dkp.empty:
-            # تجمیع بر اساس DKP
             grouped = df_valid_dkp.groupby('dkp_code').agg(
                 name=('name', 'first'),
                 total_qty=('quantity_needed', 'sum'),
                 order_count=('id', 'count')
             ).reset_index()
 
-            # مرتب‌سازی نزولی بر اساس تعداد
             grouped = grouped.sort_values(by='total_qty', ascending=False)
             
-            # تغییر نام ستون‌ها برای نمایش زیبا
             grouped = grouped.rename(columns={
                 'dkp_code': 'کد DKP',
                 'name': 'نام کالا',
