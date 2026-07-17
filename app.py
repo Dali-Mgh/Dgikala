@@ -34,7 +34,6 @@ COLUMNS_MAP = {
 @st.cache_resource
 def get_db():
     try:
-        # خواندن کلید امنیتی از Secrets استریم‌لیت
         creds_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(creds_dict)
         db = firestore.Client(credentials=creds, project=creds_dict["project_id"])
@@ -45,7 +44,6 @@ def get_db():
 
 def init_db():
     db = get_db()
-    # بررسی و ساخت داک تنظیمات در صورت عدم وجود
     config_ref = db.collection("settings").document("global_config")
     doc = config_ref.get()
     if not doc.exists:
@@ -57,6 +55,7 @@ def init_db():
             "visible_columns": DEFAULT_COLUMNS
         })
 
+@st.cache_data
 def get_settings():
     db = get_db()
     doc = db.collection("settings").document("global_config").get()
@@ -70,7 +69,9 @@ def get_settings():
 def save_settings(settings_dict):
     db = get_db()
     db.collection("settings").document("global_config").set(settings_dict)
+    get_settings.clear()
 
+@st.cache_data
 def get_products():
     db = get_db()
     docs = db.collection("products").stream()
@@ -110,25 +111,20 @@ def save_products(df):
     db = get_db()
     col_ref = db.collection("products")
     
-    # دریافت لیست مستندات موجود جهت همگام‌سازی و حذف مواردی که دیلیت شده‌اند
     docs = col_ref.stream()
     existing_ids = {doc.id for doc in docs}
     df_ids = {str(int(float(x))) for x in df['id'].tolist() if pd.notna(x)}
     
-    # عملیات دسته‌ای (Batch) برای سرعت بی‌نظیر و عدم قطعی
     batch = db.batch()
     
-    # حذف ردیف‌های حذف شده
     for doc_id in (existing_ids - df_ids):
         batch.delete(col_ref.document(doc_id))
         
-    # ثبت و آپدیت ردیف‌های موجود
     for _, row in df.iterrows():
         doc_id = str(int(float(row['id'])))
         doc_ref = col_ref.document(doc_id)
         row_dict = row.fillna("").to_dict()
         
-        # تبدیل انواع داده‌های numpy به پایتون بومی جهت همخوانی با فایربیس
         clean_dict = {}
         for k, v in row_dict.items():
             if hasattr(v, 'item'):
@@ -138,6 +134,7 @@ def save_products(df):
         batch.set(doc_ref, clean_dict)
         
     batch.commit()
+    get_products.clear()
 
 STATUS_OPTIONS = ["کالاهای درخواستی", "کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
 ACTIVE_STATUSES = ["کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
@@ -160,7 +157,6 @@ if not st.session_state["logged_in"]:
                 st.error("نام کاربری یا رمز عبور اشتباه است.")
     st.stop()
 
-# راه‌اندازی پایگاه داده در سشن اول
 if "db_initialized" not in st.session_state:
     init_db()
     st.session_state["db_initialized"] = True
@@ -428,15 +424,12 @@ def render_product_table(df_subset, tab_key):
                 st.success("کالا با موفقیت حذف شد!")
                 st.rerun()
 
-# ================= خواندن اطلاعات و تب‌ها =================
 df = get_products()
 
-# اعمال محاسبات پویا در صورت عدم خالی بودن دیتابیس
 if not df.empty:
     df[['pure_profit_toman', 'profit_percent', 'net_sales_toman', 'processing_fee_toman', 'tax_amount_toman', 'item_shipping_toman']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1, result_type='expand')
     df['cbm_per_carton'] = (pd.to_numeric(df['length_cm']) * pd.to_numeric(df['width_cm']) * pd.to_numeric(df['height_cm'])) / 1000000
     
-    # سایدبار گزارش زنده
     st.sidebar.markdown("---")
     st.sidebar.subheader("📊 گزارش مالی (زنده)")
     for status in STATUS_OPTIONS:
@@ -450,11 +443,9 @@ if not df.empty:
         st.sidebar.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
         st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
 
-# بخش سرچ کالا (سراسری)
 st.subheader("🔍 جستجوی هوشمند")
 search_query = st.text_input("نام کالا یا کد DKP را وارد کنید:", key="global_search_input")
 
-# فیلتر کردن دیتافریم بر اساس سرچ کاربر
 df_filtered = df
 if search_query:
     df_filtered = df[df['name'].str.contains(search_query, case=False, na=False) | 
@@ -504,7 +495,6 @@ with tabs[5]:
         if st.form_submit_button("ثبت کالا"):
             df_all = get_products()
             
-            # محاسبه مطمئن شناسه جدید
             current_max_id = 0
             if not df_all.empty and 'id' in df_all.columns:
                 valid_ids = pd.to_numeric(df_all['id'], errors='coerce').dropna()
@@ -550,7 +540,6 @@ with tabs[6]:
     if not df.empty:
         df_budget = df[df['status'] == 'کالاهای درخواستی'].copy()
         if not df_budget.empty:
-            # مرتب‌سازی بر اساس حاشیه سود نزولی
             df_budget = df_budget.sort_values(by='profit_percent', ascending=False)
             
             suggested = []
@@ -561,28 +550,23 @@ with tabs[6]:
                 qty_needed = float(p['quantity_needed'])
                 cost_full = buy_price * qty_needed
                 
-                # قانون ۱: زیر ۵۰۰۰ یوان (تغییر تعداد ممنوع - یا کل تعداد یا هیچی)
                 if cost_full <= 5000:
                     if rem_budget >= cost_full:
                         suggested_qty = qty_needed
                         rem_budget -= cost_full
                         suggested.append((p, suggested_qty))
-                # قانون ۲: بین ۵۰۰۱ تا ۱۰۰۰۰ یوان
                 elif cost_full <= 10000:
                     if qty_needed < 100:
-                        # زیر ۱۰۰ عدد (تغییر تعداد ممنوع)
                         if rem_budget >= cost_full:
                             suggested_qty = qty_needed
                             rem_budget -= cost_full
                             suggested.append((p, suggested_qty))
                     else:
-                        # بالای ۱۰۰ عدد (کاهش مجاز است)
                         max_qty = int(rem_budget // buy_price)
                         suggested_qty = min(qty_needed, max_qty)
                         if suggested_qty > 0:
                             rem_budget -= (suggested_qty * buy_price)
                             suggested.append((p, suggested_qty))
-                # قانون ۳: بالای ۱۰۰۰۰ یوان (کاهش تعداد همواره مجاز است)
                 else:
                     max_qty = int(rem_budget // buy_price)
                     suggested_qty = min(qty_needed, max_qty)
@@ -639,7 +623,6 @@ with tabs[6]:
                 
                 st.table(pd.DataFrame(suggested_data))
                 
-                # محاسبه هزینه نهایی تا تهران
                 total_yuan_toman = total_yuan * yuan_rate
                 total_landed_cost = total_yuan_toman + total_shipping + total_processing + total_tax
                 
@@ -787,6 +770,3 @@ with tabs[7]:
             st.rerun()
         except Exception as e:
             st.error(f"خطا در ساختار فایل: {e}")
-
-
-
