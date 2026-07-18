@@ -236,7 +236,29 @@ with st.sidebar:
         save_settings(settings_data)
         st.success("آمار کنتور صفر شد!")
         st.rerun()
-
+st.markdown("---")
+    st.subheader("🧪 تست اتصال به دیجی‌کالا")
+    test_dkp = st.text_input("کد DKP کالا را برای تست وارد کن:")
+    if st.button("دریافت قیمت از دیجی‌کالا"):
+        try:
+            # هدر برای اینکه دیجی‌کالا ما را ربات تشخیص ندهد
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            # ریکوئست به API عمومی دیجی‌کالا
+            res = requests.get(f"https://api.digikala.com/v1/product/{test_dkp}/", headers=headers, timeout=5)
+            
+            if res.status_code == 200:
+                data = res.json()
+                price_rial = data['data']['product']['default_variant']['price']['selling_price']
+                price_toman = int(price_rial / 10)
+                st.success(f"موفق! قیمت فروش: {price_toman:,.0f} تومان")
+            else:
+                st.error(f"دسترسی توسط دیجی‌کالا مسدود شد. ارور: {res.status_code}")
+        except KeyError:
+            st.warning("کالا در دیجی‌کالا ناموجود است یا قیمت (بای‌باکس) ندارد.")
+        except Exception as e:
+            st.error(f"خطا در ارتباط: {e}")
 
 # ================= توابع محاسباتی =================
 def calculate_fees(dk_price, comm_pct):
