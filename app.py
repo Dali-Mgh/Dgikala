@@ -626,9 +626,7 @@ if selected_menu == "پیشنهاد خرید":
             
             if suggested:
                 st.write("---")
-                # نمایش خلاصه مشابه نسخه قبلی
-                total_yuan = sum([s_qty * p['buy_price_yuan'] for p, s_qty in suggested])
-                st.success(f"با موفقیت سبد چیده شد. بودجه مصرفی: {total_yuan:,.0f} یوان")
+                st.success("✅ سبد خرید پیشنهادی بر اساس بالاترین حاشیه سود آماده شد:")
                 
                 # --- نمایش جدول کالاهای پیشنهاد شده ---
                 suggested_data = []
@@ -641,7 +639,21 @@ if selected_menu == "پیشنهاد خرید":
                         "جمع یوان": s_qty * p['buy_price_yuan']
                     })
                 st.dataframe(pd.DataFrame(suggested_data), use_container_width=True, hide_index=True)
-                # --------------------------------------
+                
+                # --- آمار پایین لیست ---
+                total_yuan = sum([s_qty * p['buy_price_yuan'] for p, s_qty in suggested])
+                total_items = sum([s_qty for p, s_qty in suggested])
+                remaining_budget = budget - total_yuan
+                
+                st.markdown(f"""
+                <div style='background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; margin-top: 15px;'>
+                    <h4 style='color: #0d6efd; margin-top: 0;'>📊 آمار نهایی سبد پیشنهادی</h4>
+                    <p style='margin-bottom: 5px; font-size: 15px;'><b>بودجه اولیه تعیین شده:</b> {budget:,.0f} یوان</p>
+                    <p style='margin-bottom: 5px; color: #198754; font-size: 16px;'><b>کل بودجه مصرف شده:</b> {total_yuan:,.0f} یوان</p>
+                    <p style='margin-bottom: 5px; color: #dc3545; font-size: 15px;'><b>بودجه باقیمانده:</b> {remaining_budget:,.0f} یوان</p>
+                    <p style='margin-bottom: 0; font-size: 15px;'><b>تعداد کل اقلام پیشنهادی:</b> {total_items:,.0f} عدد</p>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.warning("با این بودجه پیشنهادی یافت نشد.")
         else:
