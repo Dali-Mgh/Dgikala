@@ -188,6 +188,8 @@ if "db_initialized" not in st.session_state:
     init_db()
     st.session_state["db_initialized"] = True
 
+st.markdown("<h1 style='text-align: center; color: #ef394e; padding-bottom: 10px; font-weight: 900;'>نرم افزار سفارشی لوتوس</h1>", unsafe_allow_html=True)
+
 def get_live_yuan():
     try:
         res = requests.get('https://brsapi.ir/FreeTsetmcBourseApi/Api_Free_Gold_Currency_v2.json', timeout=5)
@@ -312,18 +314,18 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    st.subheader("📊 گزارش مالی (زنده)")
-    if not df.empty:
-        for status in STATUS_OPTIONS:
-            df_status = df[df['status'] == status]
-            total_yuan = (pd.to_numeric(df_status['buy_price_yuan']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
-            total_profit = pd.to_numeric(df_status['pure_profit_toman']).sum() if not df_status.empty else 0
-            total_net_sales = (pd.to_numeric(df_status['net_sales_toman']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
-            
-            st.markdown(f"**{status}**")
-            st.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
-            st.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
-            st.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
+    with st.expander("📊 گزارش مالی (زنده)", expanded=False):
+        if not df.empty:
+            for status in STATUS_OPTIONS:
+                df_status = df[df['status'] == status]
+                total_yuan = (pd.to_numeric(df_status['buy_price_yuan']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
+                total_profit = pd.to_numeric(df_status['pure_profit_toman']).sum() if not df_status.empty else 0
+                total_net_sales = (pd.to_numeric(df_status['net_sales_toman']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
+                
+                st.markdown(f"**{status}**")
+                st.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
+                st.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
+                st.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
 
 def render_product_table(df_subset, tab_key):
     if df_subset.empty:
@@ -627,6 +629,19 @@ if selected_menu == "پیشنهاد خرید":
                 # نمایش خلاصه مشابه نسخه قبلی
                 total_yuan = sum([s_qty * p['buy_price_yuan'] for p, s_qty in suggested])
                 st.success(f"با موفقیت سبد چیده شد. بودجه مصرفی: {total_yuan:,.0f} یوان")
+                
+                # --- نمایش جدول کالاهای پیشنهاد شده ---
+                suggested_data = []
+                for p, s_qty in suggested:
+                    suggested_data.append({
+                        "کد DKP": p['dkp_code'],
+                        "نام کالا": p['name'],
+                        "تعداد پیشنهادی": s_qty,
+                        "قیمت خرید واحد (یوان)": p['buy_price_yuan'],
+                        "جمع یوان": s_qty * p['buy_price_yuan']
+                    })
+                st.dataframe(pd.DataFrame(suggested_data), use_container_width=True, hide_index=True)
+                # --------------------------------------
             else:
                 st.warning("با این بودجه پیشنهادی یافت نشد.")
         else:
@@ -735,3 +750,11 @@ if selected_menu == "تجمیعی DKP":
             st.info("هیچ کالای خریداری شده‌ای که دارای کد DKP باشد در سیستم ثبت نشده است.")
     else:
         st.info("لیست کالاها خالی است.")
+
+# فوتر اختصاصی در پایین‌ترین بخش برنامه
+st.markdown("""
+<br><br><br>
+<div style='text-align: center; color: #888; font-size: 13px; border-top: 1px solid #eaeaea; padding-top: 15px; margin-top: 50px;'>
+    تمامی حقوق این نرم افزار برای <b>آقای محمد قندالی</b> است ©
+</div>
+""", unsafe_allow_html=True)
