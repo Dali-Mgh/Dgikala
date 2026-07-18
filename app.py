@@ -236,34 +236,7 @@ with st.sidebar:
         save_settings(settings_data)
         st.success("آمار کنتور صفر شد!")
         st.rerun()
-    st.markdown("---")
-    st.subheader("🧪 تست اتصال به دیجی‌کالا (با پروکسی)")
-    test_dkp = st.text_input("کد DKP کالا را برای تست وارد کن:")
-    if st.button("دریافت قیمت از دیجی‌کالا"):
-        try:
-            import json
-            # استفاده از پروکسی واسط رایگان برای دور زدن فایروال دیجی‌کالا
-            target_url = f"https://api.digikala.com/v1/product/{test_dkp}/"
-            proxy_url = f"https://api.allorigins.win/get?url={target_url}"
-            
-            # زمان تایم‌اوت را کمی بیشتر کردیم چون درخواست دو مرحله‌ای است
-            res = requests.get(proxy_url, timeout=10)
-            
-            if res.status_code == 200:
-                data = res.json()
-                if data.get('contents'):
-                    dg_data = json.loads(data['contents'])
-                    price_rial = dg_data['data']['product']['default_variant']['price']['selling_price']
-                    price_toman = int(price_rial / 10)
-                    st.success(f"موفق! قیمت فروش: {price_toman:,.0f} تومان")
-                else:
-                    st.error("پروکسی وصل شد اما دیجی‌کالا دیتایی برنگرداند.")
-            else:
-                st.error(f"ارتباط با پروکسی قطع شد. ارور: {res.status_code}")
-        except KeyError:
-            st.warning("کالا در دیجی‌کالا ناموجود است یا قیمت (بای‌باکس) ندارد.")
-        except Exception as e:
-            st.error(f"خطا در ارتباط: {e}")
+    
 
 # ================= توابع محاسباتی =================
 def calculate_fees(dk_price, comm_pct):
