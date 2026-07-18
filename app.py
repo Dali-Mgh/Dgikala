@@ -8,7 +8,7 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 from streamlit_option_menu import option_menu
 
-st.set_page_config(page_title="مدیریت هوشمند خرید (Firestore)", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="مدیریت هوشمند خرید", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -133,7 +133,7 @@ def get_products():
     for col in str_cols:
         if col in df.columns:
             df[col] = df[col].fillna("").astype(str)
-            # حذف کردن 0. از انتهای کدهای DKP
+            # حذف کردن .0 از انتهای کدهای DKP
             if col == "dkp_code":
                 df[col] = df[col].apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
                 
@@ -188,7 +188,7 @@ if "db_initialized" not in st.session_state:
     init_db()
     st.session_state["db_initialized"] = True
 
-st.markdown("<h1 style='text-align: center; color: #ef394e; padding-bottom: 10px; font-weight: 900;'>نرم افزار سفارشی لوتوس</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #ef394e; padding-bottom: 10px; font-weight: 900; font-family: Tahoma, sans-serif;'>نرم افزار سفارشی لوتوس</h1>", unsafe_allow_html=True)
 
 def get_live_yuan():
     try:
@@ -469,7 +469,6 @@ def render_product_table(df_subset, tab_key):
                 st.success("کالا حذف شد!")
                 st.rerun()
 
-# نوار جستجوی سراسری (فقط در صفحات جداول نمایش داده شود)
 if selected_menu in ["کل کالاها", "درخواستی", "انبار چین", "ارسال شده", "موجود"]:
     st.subheader(f"لیست {selected_menu}")
     search_query = st.text_input("🔍 نام کالا یا کد DKP را جستجو کنید:", key=f"search_{selected_menu}")
@@ -628,7 +627,7 @@ if selected_menu == "پیشنهاد خرید":
                 st.write("---")
                 st.success("✅ سبد خرید پیشنهادی بر اساس بالاترین حاشیه سود آماده شد:")
                 
-                # --- نمایش جدول کالاهای پیشنهاد شده ---
+                # نمایش جدول کالاهای پیشنهاد شده
                 suggested_data = []
                 for p, s_qty in suggested:
                     suggested_data.append({
@@ -640,18 +639,68 @@ if selected_menu == "پیشنهاد خرید":
                     })
                 st.dataframe(pd.DataFrame(suggested_data), use_container_width=True, hide_index=True)
                 
-                # --- آمار پایین لیست ---
+                # محاسبات پایه بودجه
                 total_yuan = sum([s_qty * p['buy_price_yuan'] for p, s_qty in suggested])
                 total_items = sum([s_qty for p, s_qty in suggested])
                 remaining_budget = budget - total_yuan
                 
+                # محاسبه دقیق ۵ آیتم درخواستی برای این سبد
+                total_cbm = 0.0
+                total_shipping_toman = 0.0
+                total_sales_toman = 0.0
+                total_expenses_toman = 0.0
+                total_net_profit_toman = 0.0
+                
+                for p, s_qty in suggested:
+                    dk_price = float(p['digikala_price_toman'])
+                    buy_yuan = float(p['buy_price_yuan'])
+                    comm_pct = float(p['commission_percent'])
+                    cbm_rate = float(p['cbm_rate_toman'])
+                    l, w, h = float(p['length_cm']), float(p['width_cm']), float(p['height_cm'])
+                    pcs = int(p['pcs_per_carton'])
+                    
+                    # محاسبه CBM و حمل
+                    carton_cbm = (l * w * h) / 1000000
+                    item_cbm = carton_cbm / pcs if pcs > 0 else 0
+                    total_cbm += (item_cbm * s_qty)
+                    
+                    item_shipping = item_cbm * cbm_rate
+                    total_shipping_toman += (item_shipping * s_qty)
+                    
+                    # فروش
+                    total_sales_toman += (dk_price * s_qty)
+                    
+                    # هزینه‌ها (کالا + دیجی کالا + حمل)
+                    proc_fee, tax = calculate_fees(dk_price, comm_pct)
+                    comm_amount = dk_price * (comm_pct / 100.0)
+                    item_cost_toman = (buy_yuan * saved_yuan)
+                    
+                    item_total_expense = item_cost_toman + item_shipping + proc_fee + tax + comm_amount
+                    total_expenses_toman += (item_total_expense * s_qty)
+                    
+                    # سود
+                    item_profit = dk_price - item_total_expense
+                    total_net_profit_toman += (item_profit * s_qty)
+
+                # نمایش آمار پیشرفته و بودجه
                 st.markdown(f"""
                 <div style='background-color: #f8f9fa; padding: 15px; border-radius: 8px; border: 1px solid #dee2e6; margin-top: 15px;'>
                     <h4 style='color: #0d6efd; margin-top: 0;'>📊 آمار نهایی سبد پیشنهادی</h4>
-                    <p style='margin-bottom: 5px; font-size: 15px;'><b>بودجه اولیه تعیین شده:</b> {budget:,.0f} یوان</p>
-                    <p style='margin-bottom: 5px; color: #198754; font-size: 16px;'><b>کل بودجه مصرف شده:</b> {total_yuan:,.0f} یوان</p>
-                    <p style='margin-bottom: 5px; color: #dc3545; font-size: 15px;'><b>بودجه باقیمانده:</b> {remaining_budget:,.0f} یوان</p>
-                    <p style='margin-bottom: 0; font-size: 15px;'><b>تعداد کل اقلام پیشنهادی:</b> {total_items:,.0f} عدد</p>
+                    <div style='display: flex; flex-wrap: wrap; gap: 20px;'>
+                        <div style='flex: 1; min-width: 250px;'>
+                            <p style='margin-bottom: 5px; font-size: 15px;'><b>بودجه اولیه تعیین شده:</b> {budget:,.0f} یوان</p>
+                            <p style='margin-bottom: 5px; color: #198754; font-size: 16px;'><b>کل بودجه مصرف شده:</b> {total_yuan:,.0f} یوان</p>
+                            <p style='margin-bottom: 5px; color: #dc3545; font-size: 15px;'><b>بودجه باقیمانده:</b> {remaining_budget:,.0f} یوان</p>
+                            <p style='margin-bottom: 0; font-size: 15px;'><b>تعداد کل اقلام پیشنهادی:</b> {total_items:,.0f} عدد</p>
+                        </div>
+                        <div style='flex: 1; min-width: 250px; border-right: 2px solid #dee2e6; padding-right: 15px;'>
+                            <p style='margin-bottom: 5px; font-size: 15px;'><b>CBM کل:</b> {total_cbm:,.4f}</p>
+                            <p style='margin-bottom: 5px; font-size: 15px;'><b>هزینه کل حمل:</b> {total_shipping_toman:,.0f} تومان</p>
+                            <p style='margin-bottom: 5px; font-size: 15px;'><b>مبلغ فروش کل:</b> {total_sales_toman:,.0f} تومان</p>
+                            <p style='margin-bottom: 5px; font-size: 15px;'><b>مجموع هزینه‌ها (حمل+دیجی+کالا):</b> {total_expenses_toman:,.0f} تومان</p>
+                            <p style='margin-bottom: 0; color: #198754; font-size: 16px; font-weight: bold;'><b>سود خالص این لیست:</b> {total_net_profit_toman:,.0f} تومان</p>
+                        </div>
+                    </div>
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -739,7 +788,7 @@ if selected_menu == "تجمیعی DKP":
     st.info("این بخش مجموع خریدهای قطعی (انبار چین به بعد) هر کالا را نشان می‌دهد. کالاهای درخواستی در این آمار لحاظ نمی‌شوند.")
     
     if not df.empty:
-        # فیلتر برای کالاهایی که DKP دارند و وضعیتشان خریده شده است
+        # فیلتر برای کالاهایی که DKP دارند و وضعیتشان در وضعیت‌های فعال/خریداری شده است
         df_valid_dkp = df[(df['dkp_code'].astype(str).str.strip() != '') & (df['status'].isin(ACTIVE_STATUSES))]
         
         if not df_valid_dkp.empty:
@@ -763,10 +812,9 @@ if selected_menu == "تجمیعی DKP":
     else:
         st.info("لیست کالاها خالی است.")
 
-# فوتر اختصاصی در پایین‌ترین بخش برنامه
 st.markdown("""
 <br><br><br>
-<div style='text-align: center; color: #888; font-size: 13px; border-top: 1px solid #eaeaea; padding-top: 15px; margin-top: 50px;'>
+<div style='text-align: center; color: #888; font-size: 12px; border-top: 1px solid #eaeaea; padding-top: 15px; margin-top: 50px;'>
     تمامی حقوق این نرم افزار برای <b>آقای محمد قندالی</b> است ©
 </div>
 """, unsafe_allow_html=True)
