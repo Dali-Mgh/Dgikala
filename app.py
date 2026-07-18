@@ -236,7 +236,7 @@ with st.sidebar:
         save_settings(settings_data)
         st.success("آمار کنتور صفر شد!")
         st.rerun()
-st.markdown("---")
+    st.markdown("---")
     st.subheader("🧪 تست اتصال به دیجی‌کالا")
     test_dkp = st.text_input("کد DKP کالا را برای تست وارد کن:")
     if st.button("دریافت قیمت از دیجی‌کالا"):
