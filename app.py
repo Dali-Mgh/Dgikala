@@ -459,20 +459,35 @@ if search_query:
     df_filtered = df[df['name'].str.contains(search_query, case=False, na=False) | 
                      df['dkp_code'].astype(str).str.contains(search_query, case=False, na=False)]
 
-tabs = st.tabs(["📋 کل کالاها", "🛒 درخواستی", "🇨🇳 انبار چین", "✈️ ارسال شده", "📦 موجود", "➕ افزودن جدید", "💡 پیشنهاد خرید", "📥 اکسل", "📈 تجمیعی DKP"])
+from streamlit_option_menu import option_menu
 
-with tabs[0]: 
+with st.sidebar:
+    st.markdown("---")
+    selected_menu = option_menu(
+        menu_title="منوی اصلی",
+        options=["کل کالاها", "درخواستی", "انبار چین", "ارسال شده", "موجود", "افزودن جدید"],
+            icons=["list-ul", "cart", "building", "airplane", "box", "plus-circle"],
+        menu_icon="cast",
+        default_index=0,
+        styles={
+            "container": {"padding": "0!important", "background-color": "transparent"},
+            "icon": {"color": "orange", "font-size": "18px"},
+            "nav-link": {"font-size": "15px", "text-align": "right", "margin":"0px", "--hover-color": "#eee"},
+            "nav-link-selected": {"background-color": "#ef394e"},
+        }
+    )
+if selected_menu == "کل کالاها":
     render_product_table(df_filtered, "all")
-with tabs[1]: 
+if selected_menu == "درخواستی":
     render_product_table(df_filtered[df_filtered['status'] == 'کالاهای درخواستی'], "req")
-with tabs[2]: 
+if selected_menu == "انبار چین":
     render_product_table(df_filtered[df_filtered['status'] == 'کالاهای خریداری شده (انبار چین)'], "china")
-with tabs[3]: 
+if selected_menu == "ارسال شده": 
     render_product_table(df_filtered[df_filtered['status'] == 'کالاهای ارسال شده'], "sent")
-with tabs[4]: 
+if selected_menu == "موجود":
     render_product_table(df_filtered[df_filtered['status'] == 'کالاهای موجود'], "stock")
 
-with tabs[5]:
+if selected_menu == "افزودن جدید":
     st.info("💡 برای ثبت مجدد کالای تکراری، کد DKP آن را وارد کنید تا اطلاعات به صورت خودکار کپی شود.")
     dkp_to_copy = st.text_input("کد DKP برای کپی اطلاعات (اختیاری):", key="dkp_copy_input")
     
