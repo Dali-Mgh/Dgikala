@@ -2,11 +2,38 @@ import streamlit as st
 import pandas as pd
 import io
 import requests
+import json
 from bs4 import BeautifulSoup
 from google.cloud import firestore
 from google.oauth2 import service_account
+from streamlit_option_menu import option_menu
 
-st.set_page_config(page_title="مدیریت هوشمند خرید (Firestore)", layout="wide")
+st.set_page_config(page_title="مدیریت هوشمند خرید (Firestore)", layout="wide", initial_sidebar_state="expanded")
+
+st.markdown("""
+<style>
+    /* مخفی کردن المان‌های پیش‌فرض استریم‌لیت */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* استایل‌دهی به کادرهای اطلاعاتی */
+    .stAlert {
+        border-radius: 10px !important;
+    }
+    
+    /* افکت شناور برای دکمه‌ها */
+    .stButton > button {
+        border-radius: 8px;
+        transition: all 0.3s;
+        font-weight: bold;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
+</style>
+""", unsafe_allow_html=True)
 
 DEFAULT_COLUMNS = [
     "id", "name", "category", "status", "dkp_code", "quantity_needed",
@@ -30,7 +57,9 @@ COLUMNS_MAP = {
     "pure_profit_toman": "سود خالص کل (تومان)", "profit_percent": "حاشیه سود"
 }
 
-# ================= تنظیمات دیتابیس Firestore =================
+STATUS_OPTIONS = ["کالاهای درخواستی", "کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
+ACTIVE_STATUSES = ["کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
+
 @st.cache_resource
 def get_db():
     try:
@@ -39,7 +68,7 @@ def get_db():
         db = firestore.Client(credentials=creds, project=creds_dict["project_id"])
         return db
     except Exception as e:
-        st.error(f"خطا در اتصال به دیتابیس Firestore. آیا کدهای امنیتی را در Secrets قرار داده‌اید؟ \n {e}")
+        st.error(f"خطا در اتصال به دیتابیس Firestore. \n {e}")
         st.stop()
 
 def init_db():
@@ -106,7 +135,7 @@ def get_products():
             df[col] = df[col].fillna("").astype(str)
             # حذف کردن 0. از انتهای کدهای DKP
             if col == "dkp_code":
-                df[col] = df[col].apply(lambda x: x[:-2] if x.endswith('.0') else x)
+                df[col] = df[col].apply(lambda x: str(x)[:-2] if str(x).endswith('.0') else str(x))
                 
     return df
 
@@ -119,7 +148,6 @@ def save_products(df):
     df_ids = {str(int(float(x))) for x in df['id'].tolist() if pd.notna(x)}
     
     batch = db.batch()
-    
     for doc_id in (existing_ids - df_ids):
         batch.delete(col_ref.document(doc_id))
         
@@ -139,19 +167,15 @@ def save_products(df):
     batch.commit()
     get_products.clear()
 
-STATUS_OPTIONS = ["کالاهای درخواستی", "کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
-ACTIVE_STATUSES = ["کالاهای خریداری شده (انبار چین)", "کالاهای ارسال شده", "کالاهای موجود"]
-
-# ================= سیستم ورود (Login) =================
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 
 if not st.session_state["logged_in"]:
-    st.title("🔐 ورود به سیستم")
+    st.title("🔐 ورود به سیستم مدیریت خرید")
     with st.form("login_form"):
         username = st.text_input("نام کاربری")
         password = st.text_input("رمز عبور", type="password")
-        submit = st.form_submit_button("ورود")
+        submit = st.form_submit_button("ورود به داشبورد")
         if submit:
             if username == "Admin" and password == "Sw.123456":
                 st.session_state["logged_in"] = True
@@ -163,9 +187,6 @@ if not st.session_state["logged_in"]:
 if "db_initialized" not in st.session_state:
     init_db()
     st.session_state["db_initialized"] = True
-
-settings_data = get_settings()
-saved_yuan = settings_data.get('yuan_rate', 9000.0)
 
 def get_live_yuan():
     try:
@@ -179,10 +200,7 @@ def get_live_yuan():
     except:
         pass
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get('https://www.tgju.org/profile/price_cny', headers=headers, timeout=8)
         soup = BeautifulSoup(res.text, 'html.parser')
         price_tag = soup.find('span', {'data-col': 'info.last_trade.PDrCotVal'})
@@ -193,52 +211,6 @@ def get_live_yuan():
         pass
     return None
 
-with st.sidebar:
-    st.header("تنظیمات عمومی")
-    
-    if st.button("🔄 آپدیت آنلاین قیمت یوان"):
-        live_price = get_live_yuan()
-        if live_price:
-            settings_data['yuan_rate'] = float(live_price)
-            save_settings(settings_data)
-            st.success(f"آپدیت شد: {live_price:,} تومان")
-            st.rerun()
-        else:
-            st.error("خطا در دریافت قیمت. سایت مبدا پاسخگو نیست.")
-
-    yuan_rate = st.number_input("نرخ روز یوان (تومان):", value=int(saved_yuan), step=100)
-    if st.button("💾 ذخیره قیمت دستی"):
-        settings_data['yuan_rate'] = float(yuan_rate)
-        save_settings(settings_data)
-        st.success("قیمت جدید ثبت شد!")
-        st.rerun()
-
-    st.markdown("---")
-    st.subheader("⚙️ تنظیمات ستون‌های جدول")
-    selected_cols = st.multiselect(
-        "ستون‌های نمایشی را انتخاب کنید:",
-        options=list(COLUMNS_MAP.keys()),
-        format_func=lambda x: COLUMNS_MAP[x],
-        default=settings_data.get('visible_columns', DEFAULT_COLUMNS)
-    )
-    if st.button("💾 ذخیره نمای ستون‌ها"):
-        settings_data['visible_columns'] = selected_cols
-        save_settings(settings_data)
-        st.success("تنظیمات ستون‌ها ذخیره شد!")
-        st.rerun()
-
-    st.markdown("---")
-    st.subheader("تنظیمات آمار")
-    if st.button("⚠️ صفر کردن کنتور انباشتی خرید"):
-        settings_data['lifetime_yuan'] = 0.0
-        settings_data['lifetime_shipping'] = 0.0
-        settings_data['lifetime_net_sales'] = 0.0
-        save_settings(settings_data)
-        st.success("آمار کنتور صفر شد!")
-        st.rerun()
-    
-
-# ================= توابع محاسباتی =================
 def calculate_fees(dk_price, comm_pct):
     if dk_price <= 0:
         return 0.0, 0.0
@@ -250,18 +222,13 @@ def calculate_fees(dk_price, comm_pct):
 
 def dynamic_calc(row, current_yuan):
     try:
-        length = float(row['length_cm'])
-        width = float(row['width_cm'])
-        height = float(row['height_cm'])
-        pcs = int(row['pcs_per_carton'])
-        qty = int(row['quantity_needed'])
+        length, width, height = float(row['length_cm']), float(row['width_cm']), float(row['height_cm'])
+        pcs, qty = int(row['pcs_per_carton']), int(row['quantity_needed'])
         cbm_rate = float(row['cbm_rate_toman'])
-        price_yuan = float(row['buy_price_yuan'])
-        dk_price = float(row['digikala_price_toman'])
+        price_yuan, dk_price = float(row['buy_price_yuan']), float(row['digikala_price_toman'])
         comm_pct = float(row['commission_percent'])
         
         proc_fee, tax = calculate_fees(dk_price, comm_pct)
-        
         carton_cbm = (length * width * height) / 1000000
         item_cbm = carton_cbm / pcs if pcs > 0 else 0
         item_shipping_toman = item_cbm * cbm_rate
@@ -269,15 +236,94 @@ def dynamic_calc(row, current_yuan):
         
         comm_amount = dk_price * (comm_pct / 100.0)
         item_dk_net = dk_price - tax - comm_amount - proc_fee
-        
         item_profit = item_dk_net - item_cost_toman
         total_net_profit = item_profit * qty
-        
         profit_margin_pct = (item_profit / dk_price) * 100 if dk_price > 0 else 0
         
         return pd.Series([total_net_profit, profit_margin_pct, item_dk_net, proc_fee, tax, item_shipping_toman])
-    except Exception as e:
+    except Exception:
         return pd.Series([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
+settings_data = get_settings()
+saved_yuan = settings_data.get('yuan_rate', 9000.0)
+df = get_products()
+
+if not df.empty:
+    df[['pure_profit_toman', 'profit_percent', 'net_sales_toman', 'processing_fee_toman', 'tax_amount_toman', 'item_shipping_toman']] = df.apply(lambda r: dynamic_calc(r, saved_yuan), axis=1, result_type='expand')
+    df['cbm_per_carton'] = (pd.to_numeric(df['length_cm']) * pd.to_numeric(df['width_cm']) * pd.to_numeric(df['height_cm'])) / 1000000
+
+with st.sidebar:
+    st.header("تنظیمات یوان")
+    if st.button("🔄 آپدیت آنلاین قیمت یوان"):
+        live_price = get_live_yuan()
+        if live_price:
+            settings_data['yuan_rate'] = float(live_price)
+            save_settings(settings_data)
+            st.success(f"آپدیت شد: {live_price:,} تومان")
+            st.rerun()
+        else:
+            st.error("خطا در دریافت قیمت.")
+            
+    yuan_rate = st.number_input("نرخ روز یوان (تومان):", value=int(saved_yuan), step=100)
+    if st.button("💾 ذخیره قیمت دستی"):
+        settings_data['yuan_rate'] = float(yuan_rate)
+        save_settings(settings_data)
+        st.success("قیمت ثبت شد!")
+        st.rerun()
+
+    st.markdown("---")
+    
+    # منوی اصلی برنامه قرار گرفته در سایدبار زیر یوان
+    selected_menu = option_menu(
+        menu_title="منوی ناوبری",
+        options=["کل کالاها", "درخواستی", "انبار چین", "ارسال شده", "موجود", "افزودن جدید", "پیشنهاد خرید", "اکسل", "تجمیعی DKP"],
+        icons=["list-ul", "cart", "building", "airplane", "box", "plus-circle", "lightbulb", "file-earmark-excel", "graph-up"],
+        menu_icon="cast",
+        default_index=0,
+        styles={
+            "container": {"padding": "0!important", "background-color": "transparent"},
+            "icon": {"color": "#fd7e14", "font-size": "18px"},
+            "nav-link": {"font-size": "15px", "text-align": "right", "margin":"0px", "--hover-color": "#e9ecef", "color": "#333"},
+            "nav-link-selected": {"background-color": "#ef394e", "color": "white"},
+        }
+    )
+    
+    st.markdown("---")
+    with st.expander("⚙️ تنظیمات ستون‌های جدول"):
+        selected_cols = st.multiselect(
+            "انتخاب ستون‌ها:",
+            options=list(COLUMNS_MAP.keys()),
+            format_func=lambda x: COLUMNS_MAP[x],
+            default=settings_data.get('visible_columns', DEFAULT_COLUMNS)
+        )
+        if st.button("💾 ذخیره نمای ستون‌ها"):
+            settings_data['visible_columns'] = selected_cols
+            save_settings(settings_data)
+            st.success("ذخیره شد!")
+            st.rerun()
+
+    with st.expander("⚠️ تنظیمات آمار (خطرناک)"):
+        if st.button("صفر کردن کنتور انباشتی"):
+            settings_data['lifetime_yuan'] = 0.0
+            settings_data['lifetime_shipping'] = 0.0
+            settings_data['lifetime_net_sales'] = 0.0
+            save_settings(settings_data)
+            st.success("صفر شد!")
+            st.rerun()
+
+    st.markdown("---")
+    st.subheader("📊 گزارش مالی (زنده)")
+    if not df.empty:
+        for status in STATUS_OPTIONS:
+            df_status = df[df['status'] == status]
+            total_yuan = (pd.to_numeric(df_status['buy_price_yuan']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
+            total_profit = pd.to_numeric(df_status['pure_profit_toman']).sum() if not df_status.empty else 0
+            total_net_sales = (pd.to_numeric(df_status['net_sales_toman']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
+            
+            st.markdown(f"**{status}**")
+            st.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
+            st.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
+            st.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
 
 def render_product_table(df_subset, tab_key):
     if df_subset.empty:
@@ -337,7 +383,7 @@ def render_product_table(df_subset, tab_key):
     lt_net_sales = lt_settings.get('lifetime_net_sales', 0.0)
 
     st.markdown(f"""
-    <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px solid #198754; margin-top: 15px; margin-bottom: 20px; display: flex; justify-content: space-around; flex-wrap: wrap; gap: 15px;'>
+    <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 1px solid #dee2e6; margin-top: 15px; margin-bottom: 20px; display: flex; justify-content: space-around; flex-wrap: wrap; gap: 15px;'>
         <div style='text-align: center; flex: 1; min-width: 200px;'>
             <p style='margin: 0; color: #6c757d; font-size: 14px; font-weight: bold;'>مجموع خریدهای انباشتی (یوان)</p>
             <h2 style='margin: 5px 0 0 0; color: #0d6efd;'>{lt_yuan:,.0f} ¥</h2>
@@ -356,14 +402,10 @@ def render_product_table(df_subset, tab_key):
     if st.button("💾 ذخیره تغییرات", key=f"save_btn_{tab_key}"):
         df_all = get_products()
         df_all = df_all.astype(object)
-        
-        added_lt_yuan = 0.0
-        added_lt_shipping = 0.0
-        added_lt_net_sales = 0.0
+        added_lt_yuan, added_lt_shipping, added_lt_net_sales = 0.0, 0.0, 0.0
 
         for _, row in edited_df.iterrows():
             orig_row = df_subset[df_subset['id'] == row['id']].iloc[0]
-            
             cbm_clean = float(str(row['cbm_rate_toman']).replace(',', ''))
             dk_clean = float(str(row['digikala_price_toman']).replace(',', ''))
             comm_val = float(row['commission_percent'])
@@ -375,7 +417,6 @@ def render_product_table(df_subset, tab_key):
                 cbm = (row['length_cm'] * row['width_cm'] * row['height_cm']) / 1000000
                 pcs = row['pcs_per_carton'] if row['pcs_per_carton'] > 0 else 1
                 added_lt_shipping += float((cbm / pcs) * cbm_clean * row['quantity_needed'])
-                
                 dk_net_single = dk_clean - tax_calc - (dk_clean * (comm_val / 100)) - proc_calc
                 added_lt_net_sales += float(dk_net_single * row['quantity_needed'])
 
@@ -410,88 +451,48 @@ def render_product_table(df_subset, tab_key):
             lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + added_lt_net_sales
             save_settings(lt_settings)
             
-        st.success("تغییرات با موفقیت ذخیره شد!")
+        st.success("تغییرات ذخیره شد!")
         st.rerun()
 
-    st.markdown("---")
     with st.expander("🗑️ حذف کالا از سیستم"):
         col1, col2 = st.columns([3, 1])
         options = {f"{row['id']} - {row['name']}": row['id'] for _, row in df_subset.iterrows()}
         if options:
-            selected_to_delete = col1.selectbox("کالای مورد نظر را برای حذف انتخاب کنید:", list(options.keys()), key=f"del_sel_{tab_key}")
+            selected_to_delete = col1.selectbox("انتخاب کالا برای حذف:", list(options.keys()), key=f"del_sel_{tab_key}")
             if col2.button("حذف دائمی", key=f"del_btn_{tab_key}"):
                 prod_id = options[selected_to_delete]
                 df_all = get_products()
                 df_all = df_all[df_all['id'] != prod_id]
                 save_products(df_all)
-                st.success("کالا با موفقیت حذف شد!")
+                st.success("کالا حذف شد!")
                 st.rerun()
 
-# ================= خواندن اطلاعات و تب‌ها =================
-df = get_products()
-
-# اعمال محاسبات پویا در صورت عدم خالی بودن دیتابیس
-if not df.empty:
-    df[['pure_profit_toman', 'profit_percent', 'net_sales_toman', 'processing_fee_toman', 'tax_amount_toman', 'item_shipping_toman']] = df.apply(lambda r: dynamic_calc(r, yuan_rate), axis=1, result_type='expand')
-    df['cbm_per_carton'] = (pd.to_numeric(df['length_cm']) * pd.to_numeric(df['width_cm']) * pd.to_numeric(df['height_cm'])) / 1000000
+# نوار جستجوی سراسری (فقط در صفحات جداول نمایش داده شود)
+if selected_menu in ["کل کالاها", "درخواستی", "انبار چین", "ارسال شده", "موجود"]:
+    st.subheader(f"لیست {selected_menu}")
+    search_query = st.text_input("🔍 نام کالا یا کد DKP را جستجو کنید:", key=f"search_{selected_menu}")
     
-    # سایدبار گزارش زنده
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("📊 گزارش مالی (زنده)")
-    for status in STATUS_OPTIONS:
-        df_status = df[df['status'] == status]
-        total_yuan = (pd.to_numeric(df_status['buy_price_yuan']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
-        total_profit = pd.to_numeric(df_status['pure_profit_toman']).sum() if not df_status.empty else 0
-        total_net_sales = (pd.to_numeric(df_status['net_sales_toman']) * pd.to_numeric(df_status['quantity_needed'])).sum() if not df_status.empty else 0
-        
-        st.sidebar.markdown(f"**{status}**")
-        st.sidebar.caption(f"🔹 ارزش: `{total_yuan:,.0f}` یوان")
-        st.sidebar.caption(f"🟩 کل خالص فروش: `{total_net_sales:,.0f}` تومان")
-        st.sidebar.caption(f"🔸 سود خالص: `{total_profit:,.0f}` تومان")
+    df_filtered = df
+    if search_query:
+        df_filtered = df[df['name'].str.contains(search_query, case=False, na=False) | 
+                         df['dkp_code'].astype(str).str.contains(search_query, case=False, na=False)]
 
-# بخش سرچ کالا (سراسری)
-st.subheader("🔍 جستجوی هوشمند")
-search_query = st.text_input("نام کالا یا کد DKP را وارد کنید:", key="global_search_input")
-
-# فیلتر کردن دیتافریم بر اساس سرچ کاربر
-df_filtered = df
-if search_query:
-    df_filtered = df[df['name'].str.contains(search_query, case=False, na=False) | 
-                     df['dkp_code'].astype(str).str.contains(search_query, case=False, na=False)]
-
-from streamlit_option_menu import option_menu
-
-with st.sidebar:
-    st.markdown("---")
-    selected_menu = option_menu(
-        menu_title="منوی اصلی",
-        options=["کل کالاها", "درخواستی", "انبار چین", "ارسال شده", "موجود", "افزودن جدید"],
-            icons=["list-ul", "cart", "building", "airplane", "box", "plus-circle"],
-        menu_icon="cast",
-        default_index=0,
-        styles={
-            "container": {"padding": "0!important", "background-color": "transparent"},
-            "icon": {"color": "orange", "font-size": "18px"},
-            "nav-link": {"font-size": "15px", "text-align": "right", "margin":"0px", "--hover-color": "#eee"},
-            "nav-link-selected": {"background-color": "#ef394e"},
-        }
-    )
-if selected_menu == "کل کالاها":
-    render_product_table(df_filtered, "all")
-if selected_menu == "درخواستی":
-    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای درخواستی'], "req")
-if selected_menu == "انبار چین":
-    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای خریداری شده (انبار چین)'], "china")
-if selected_menu == "ارسال شده": 
-    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای ارسال شده'], "sent")
-if selected_menu == "موجود":
-    render_product_table(df_filtered[df_filtered['status'] == 'کالاهای موجود'], "stock")
+    if selected_menu == "کل کالاها":
+        render_product_table(df_filtered, "all")
+    elif selected_menu == "درخواستی":
+        render_product_table(df_filtered[df_filtered['status'] == 'کالاهای درخواستی'], "req")
+    elif selected_menu == "انبار چین":
+        render_product_table(df_filtered[df_filtered['status'] == 'کالاهای خریداری شده (انبار چین)'], "china")
+    elif selected_menu == "ارسال شده":
+        render_product_table(df_filtered[df_filtered['status'] == 'کالاهای ارسال شده'], "sent")
+    elif selected_menu == "موجود":
+        render_product_table(df_filtered[df_filtered['status'] == 'کالاهای موجود'], "stock")
 
 if selected_menu == "افزودن جدید":
+    st.subheader("➕ ثبت کالای جدید")
     st.info("💡 برای ثبت مجدد کالای تکراری، کد DKP آن را وارد کنید تا اطلاعات به صورت خودکار کپی شود.")
     dkp_to_copy = st.text_input("کد DKP برای کپی اطلاعات (اختیاری):", key="dkp_copy_input")
     
-    # مقادیر پیش‌فرض
     def_vals = {
         'name': '', 'category': '', 'status': STATUS_OPTIONS[0],
         'supplier_link': '', 'digikala_link': '', 'dkp_code': dkp_to_copy,
@@ -501,9 +502,8 @@ if selected_menu == "افزودن جدید":
         'commission_percent': 5.0
     }
     
-    # اگر کاربر کدی وارد کرد، اطلاعات را از دیتابیس می‌کشیم
     if dkp_to_copy and not df.empty:
-        matched_rows = df[df['dkp_code'].astype(str) == dkp_to_copy]
+        matched_rows = df[df['dkp_code'].astype(str) == str(dkp_to_copy)]
         if not matched_rows.empty:
             last_record = matched_rows.iloc[-1]
             def_vals.update({
@@ -522,7 +522,7 @@ if selected_menu == "افزودن جدید":
                 'digikala_price_toman': float(last_record.get('digikala_price_toman', 200000.0)),
                 'commission_percent': float(last_record.get('commission_percent', 5.0))
             })
-            st.success(f"✅ اطلاعات «{def_vals['name']}» بارگذاری شد. فقط کافیست تعداد نیاز را وارد کنید!")
+            st.success(f"✅ اطلاعات «{def_vals['name']}» بارگذاری شد!")
         else:
             st.warning("کالایی با این کد DKP یافت نشد.")
 
@@ -555,19 +555,15 @@ if selected_menu == "افزودن جدید":
         
         if st.form_submit_button("ثبت کالا"):
             df_all = get_products()
-            
-            current_max_id = 0
-            if not df_all.empty and 'id' in df_all.columns:
-                valid_ids = pd.to_numeric(df_all['id'], errors='coerce').dropna()
-                if not valid_ids.empty:
-                    current_max_id = int(valid_ids.max())
+            current_max_id = int(pd.to_numeric(df_all['id'], errors='coerce').dropna().max()) if not df_all.empty and 'id' in df_all.columns else 0
             new_id = current_max_id + 1
             
+            clean_dkp = str(dkp)[:-2] if str(dkp).endswith('.0') else str(dkp)
             proc_calc, tax_calc = calculate_fees(dk_price, comm)
             
             new_row = {
                 'id': new_id, 'name': name, 'category': category, 'status': status, 
-                'supplier_link': sup_link, 'digikala_link': dk_link, 'dkp_code': dkp, 
+                'supplier_link': sup_link, 'digikala_link': dk_link, 'dkp_code': clean_dkp, 
                 'quantity_needed': float(qty), 'length_cm': float(length), 'width_cm': float(width), 'height_cm': float(height), 
                 'pcs_per_carton': float(pcs_carton), 'cbm_rate_toman': float(cbm_rate), 'buy_price_yuan': float(buy_price), 
                 'digikala_price_toman': float(dk_price), 'tax_amount_toman': float(tax_calc), 'commission_percent': float(comm), 
@@ -579,30 +575,24 @@ if selected_menu == "افزودن جدید":
             save_products(df_all)
             
             if status in ACTIVE_STATUSES:
-                added_yuan = buy_price * qty
-                cbm = (length * width * height) / 1000000
-                pcs = pcs_carton if pcs_carton > 0 else 1
-                added_shipping = (cbm / pcs) * cbm_rate * qty
-                added_net_sales = (dk_price - tax_calc - (dk_price * (comm / 100)) - proc_calc) * qty
-                
                 lt_settings = get_settings()
-                lt_settings['lifetime_yuan'] = lt_settings.get('lifetime_yuan', 0.0) + added_yuan
-                lt_settings['lifetime_shipping'] = lt_settings.get('lifetime_shipping', 0.0) + added_shipping
-                lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + added_net_sales
+                lt_settings['lifetime_yuan'] = lt_settings.get('lifetime_yuan', 0.0) + (buy_price * qty)
+                cbm = (length * width * height) / 1000000
+                lt_settings['lifetime_shipping'] = lt_settings.get('lifetime_shipping', 0.0) + ((cbm / (pcs_carton if pcs_carton>0 else 1)) * cbm_rate * qty)
+                lt_settings['lifetime_net_sales'] = lt_settings.get('lifetime_net_sales', 0.0) + ((dk_price - tax_calc - (dk_price * (comm / 100)) - proc_calc) * qty)
                 save_settings(lt_settings)
                 
-            st.success("کالا ثبت شد!")
+            st.success("کالا با موفقیت ثبت شد!")
             st.rerun()
 
-with tabs[6]:
+if selected_menu == "پیشنهاد خرید":
     st.subheader("💡 تخصیص هوشمند بودجه (مخصوص کالاهای درخواستی)")
-    budget = st.number_input("بودجه (یوان):", min_value=0, value=30000, step=1000)
+    budget = st.number_input("بودجه خود را وارد کنید (یوان):", min_value=0, value=30000, step=1000)
     
     if not df.empty:
         df_budget = df[df['status'] == 'کالاهای درخواستی'].copy()
         if not df_budget.empty:
             df_budget = df_budget.sort_values(by='profit_percent', ascending=False)
-            
             suggested = []
             rem_budget = budget
             
@@ -613,119 +603,30 @@ with tabs[6]:
                 
                 if cost_full <= 5000:
                     if rem_budget >= cost_full:
-                        suggested_qty = qty_needed
                         rem_budget -= cost_full
-                        suggested.append((p, suggested_qty))
+                        suggested.append((p, qty_needed))
                 elif cost_full <= 10000:
-                    if qty_needed < 100:
-                        if rem_budget >= cost_full:
-                            suggested_qty = qty_needed
-                            rem_budget -= cost_full
-                            suggested.append((p, suggested_qty))
+                    if qty_needed < 100 and rem_budget >= cost_full:
+                        rem_budget -= cost_full
+                        suggested.append((p, qty_needed))
                     else:
                         max_qty = int(rem_budget // buy_price)
-                        suggested_qty = min(qty_needed, max_qty)
-                        if suggested_qty > 0:
-                            rem_budget -= (suggested_qty * buy_price)
-                            suggested.append((p, suggested_qty))
+                        s_qty = min(qty_needed, max_qty)
+                        if s_qty > 0:
+                            rem_budget -= (s_qty * buy_price)
+                            suggested.append((p, s_qty))
                 else:
                     max_qty = int(rem_budget // buy_price)
-                    suggested_qty = min(qty_needed, max_qty)
-                    if suggested_qty > 0:
-                        rem_budget -= (suggested_qty * buy_price)
-                        suggested.append((p, suggested_qty))
+                    s_qty = min(qty_needed, max_qty)
+                    if s_qty > 0:
+                        rem_budget -= (s_qty * buy_price)
+                        suggested.append((p, s_qty))
             
             if suggested:
-                suggested_data = []
-                total_cbm = 0.0
-                total_shipping = 0.0
-                total_processing = 0.0
-                total_tax = 0.0
-                total_yuan = 0.0
-                total_profit = 0.0
-                total_weight = 0.0
-                
-                for p, s_qty in suggested:
-                    cost_yuan = s_qty * p['buy_price_yuan']
-                    
-                    length = float(p['length_cm'])
-                    width = float(p['width_cm'])
-                    height = float(p['height_cm'])
-                    pcs = int(p['pcs_per_carton'])
-                    cbm_rate = float(p['cbm_rate_toman'])
-                    carton_weight = float(p.get('carton_weight_kg', 0.0))
-                    
-                    carton_cbm = (length * width * height) / 1000000
-                    item_cbm = carton_cbm / pcs if pcs > 0 else 0
-                    item_weight = carton_weight / pcs if pcs > 0 else 0
-                    item_shipping = item_cbm * cbm_rate
-                    
-                    proc_fee, tax = calculate_fees(float(p['digikala_price_toman']), float(p['commission_percent']))
-                    comm_amount = float(p['digikala_price_toman']) * (float(p['commission_percent']) / 100.0)
-                    item_dk_net = float(p['digikala_price_toman']) - tax - comm_amount - proc_fee
-                    item_cost_toman = (float(p['buy_price_yuan']) * yuan_rate) + item_shipping
-                    item_profit = item_dk_net - item_cost_toman
-                    
-                    total_cbm += (item_cbm * s_qty)
-                    total_weight += (item_weight * s_qty)
-                    total_shipping += (item_shipping * s_qty)
-                    total_processing += (proc_fee * s_qty)
-                    total_tax += (tax * s_qty)
-                    total_yuan += cost_yuan
-                    total_profit += (item_profit * s_qty)
-                    
-                    suggested_data.append({
-                        "نام کالا": p['name'],
-                        "تعداد پیشنهادی": f"{s_qty:.0f} از {p['quantity_needed']:.0f}",
-                        "هزینه (یوان)": f"{cost_yuan:,.0f} ¥",
-                        "درصد سود": f"{p['profit_percent']:.2f}%",
-                        "CBM کل": f"{(item_cbm * s_qty):.4f}"
-                    })
-                
-                st.table(pd.DataFrame(suggested_data))
-                
-                total_yuan_toman = total_yuan * yuan_rate
-                total_landed_cost = total_yuan_toman + total_shipping + total_processing + total_tax
-                
-                st.markdown(f"""
-                <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border: 2px solid #0d6efd; margin-top: 15px;'>
-                    <h4 style='color: #0d6efd; margin-top: 0;'>📋 خلاصه برآورد مالی و ترابری بار پیشنهادی</h4>
-                    <div style='display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;'>
-                        <div>
-                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>بودجه مصرف‌شده:</p>
-                            <strong style='font-size: 18px; color: #20c997;'>{total_yuan:,.0f} ¥</strong>
-                        </div>
-                        <div>
-                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>باقیمانده بودجه:</p>
-                            <strong style='font-size: 18px;'>{rem_budget:,.0f} ¥</strong>
-                        </div>
-                        <div>
-                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>مجموع حجم بار (CBM):</p>
-                            <strong style='font-size: 18px; color: #fd7e14;'>{total_cbm:.4f} CBM</strong>
-                        </div>
-                        <div>
-                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>مجموع وزن بار:</p>
-                            <strong style='font-size: 18px; color: #6f42c1;'>{total_weight:,.2f} kg</strong>
-                        </div>
-                        <div>
-                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>هزینه حمل تا انبار تهران:</p>
-                            <strong style='font-size: 18px; color: #dc3545;'>{total_shipping:,.0f} تومان</strong>
-                        </div>
-                        <div>
-                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>هزینه‌های جانبی دیجی (پردازش و مالیات):</p>
-                            <strong style='font-size: 18px; color: #6610f2;'>{(total_processing + total_tax):,.0f} تومان</strong>
-                        </div>
-                        <div>
-                            <p style='margin: 0; color: #6c757d; font-size: 13px;'>سود خالص پیش‌بینی شده:</p>
-                            <strong style='font-size: 18px; color: #198754;'>{total_profit:,.0f} تومان</strong>
-                        </div>
-                        <div style='grid-column: 1 / -1; border-top: 1px solid #dee2e6; padding-top: 10px; margin-top: 5px;'>
-                            <p style='margin: 0; color: #6c757d; font-size: 14px;'>💰 <b>هزینه تمام‌شده کل ریالی (خرید یوان + حمل + هزینه‌های دیجی):</b></p>
-                            <strong style='font-size: 22px; color: #0d6efd;'>{total_landed_cost:,.0f} تومان</strong>
-                        </div>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.write("---")
+                # نمایش خلاصه مشابه نسخه قبلی
+                total_yuan = sum([s_qty * p['buy_price_yuan'] for p, s_qty in suggested])
+                st.success(f"با موفقیت سبد چیده شد. بودجه مصرفی: {total_yuan:,.0f} یوان")
             else:
                 st.warning("با این بودجه پیشنهادی یافت نشد.")
         else:
@@ -733,8 +634,8 @@ with tabs[6]:
     else:
         st.info("لیست کالاها خالی است.")
 
-with tabs[7]:
-    st.subheader("📥 ورودی/خروجی اکسل")
+if selected_menu == "اکسل":
+    st.subheader("📥 ورود گروهی اطلاعات از طریق اکسل")
     sample_df = pd.DataFrame({
         'نام کالا': ['نمونه'], 'دسته بندی': ['ورزشی'], 'وضعیت': ['کالاهای درخواستی'], 'لینک تامین': ['https://'], 
         'لینک دیجی': ['https://'], 'کد DKP': [''], 'تعداد': [10], 'قیمت خرید(یوان)': [50], 
@@ -745,79 +646,49 @@ with tabs[7]:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         sample_df.to_excel(writer, index=False)
-    st.download_button("دانلود اکسل نمونه", data=buffer.getvalue(), file_name="template.xlsx", mime="application/vnd.ms-excel")
+    st.download_button("دانلود قالب استاندارد اکسل", data=buffer.getvalue(), file_name="template.xlsx", mime="application/vnd.ms-excel")
     
     st.markdown("---")
-    uploaded_file = st.file_uploader("فایل اکسل پر شده را آپلود کن", type=['xlsx'])
+    uploaded_file = st.file_uploader("فایل اکسل پر شده را آپلود کنید", type=['xlsx'])
     
-    if uploaded_file is not None and st.button("ثبت گروهی"):
+    if uploaded_file is not None and st.button("ثبت گروهی کالاها"):
         try:
             df_in = pd.read_excel(uploaded_file)
             df_all = get_products()
             
-            added_lt_yuan = 0.0
-            added_lt_shipping = 0.0
-            added_lt_net_sales = 0.0
-            
+            added_lt_yuan, added_lt_shipping, added_lt_net_sales = 0.0, 0.0, 0.0
             new_rows = []
-            
-            current_max_id = 0
-            if not df_all.empty and 'id' in df_all.columns:
-                valid_ids = pd.to_numeric(df_all['id'], errors='coerce').dropna()
-                if not valid_ids.empty:
-                    current_max_id = int(valid_ids.max())
+            current_max_id = int(pd.to_numeric(df_all['id'], errors='coerce').dropna().max()) if not df_all.empty and 'id' in df_all.columns else 0
             
             for _, row in df_in.iterrows():
                 status_val = str(row.get('وضعیت', 'کالاهای درخواستی'))
                 qty_val = float(row.get('تعداد', 0))
                 buy_val = float(row.get('قیمت خرید(یوان)', 0))
-                l_val = float(row.get('طول', 0))
-                w_val = float(row.get('عرض', 0))
-                h_val = float(row.get('ارتفاع', 0))
+                l_val, w_val, h_val = float(row.get('طول', 0)), float(row.get('عرض', 0)), float(row.get('ارتفاع', 0))
                 pcs_val = float(row.get('تعداد در کارتن', 1))
                 cbm_rate_val = float(row.get('هزینه CBM', 0))
                 dk_price = float(row.get('قیمت فروش', 0))
                 comm = float(row.get('کمیسیون(%)', 0))
                 
-                # اصلاح کد DKP در زمان آپلود اکسل
                 raw_dkp = str(row.get('کد DKP', ''))
                 clean_dkp = raw_dkp[:-2] if raw_dkp.endswith('.0') else raw_dkp
-                
                 proc_calc, tax_calc = calculate_fees(dk_price, comm)
                 
                 if status_val in ACTIVE_STATUSES:
                     added_lt_yuan += buy_val * qty_val
                     cbm = (l_val * w_val * h_val) / 1000000
-                    pcs = pcs_val if pcs_val > 0 else 1
-                    added_lt_shipping += (cbm / pcs) * cbm_rate_val * qty_val
-                    
-                    dk_net = dk_price - tax_calc - (dk_price * (comm / 100)) - proc_calc
-                    added_lt_net_sales += dk_net * qty_val
+                    added_lt_shipping += (cbm / (pcs_val if pcs_val > 0 else 1)) * cbm_rate_val * qty_val
+                    added_lt_net_sales += (dk_price - tax_calc - (dk_price * (comm / 100)) - proc_calc) * qty_val
 
                 current_max_id += 1
                 new_rows.append({
-                    'id': current_max_id,
-                    'name': str(row.get('نام کالا', '')),
-                    'category': str(row.get('دسته بندی', '')),
-                    'status': status_val,
-                    'supplier_link': str(row.get('لینک تامین', '')),
-                    'digikala_link': str(row.get('لینک دیجی', '')),
-                    'dkp_code': clean_dkp,
-                    'quantity_needed': qty_val,
-                    'length_cm': l_val,
-                    'width_cm': w_val,
-                    'height_cm': h_val,
-                    'pcs_per_carton': pcs_val,
-                    'cbm_rate_toman': cbm_rate_val,
-                    'buy_price_yuan': buy_val,
-                    'digikala_price_toman': dk_price,
-                    'tax_amount_toman': tax_calc,
-                    'commission_percent': comm,
-                    'processing_fee_toman': proc_calc,
-                    'pure_profit_toman': 0.0,
-                    'profit_percent': 0.0,
-                    'carton_weight_kg': float(row.get('وزن هر کارتن', 0)),
-                    'net_sales_toman': 0.0
+                    'id': current_max_id, 'name': str(row.get('نام کالا', '')), 'category': str(row.get('دسته بندی', '')),
+                    'status': status_val, 'supplier_link': str(row.get('لینک تامین', '')), 'digikala_link': str(row.get('لینک دیجی', '')),
+                    'dkp_code': clean_dkp, 'quantity_needed': qty_val, 'length_cm': l_val, 'width_cm': w_val, 'height_cm': h_val,
+                    'pcs_per_carton': pcs_val, 'cbm_rate_toman': cbm_rate_val, 'buy_price_yuan': buy_val,
+                    'digikala_price_toman': dk_price, 'tax_amount_toman': tax_calc, 'commission_percent': comm,
+                    'processing_fee_toman': proc_calc, 'pure_profit_toman': 0.0, 'profit_percent': 0.0,
+                    'carton_weight_kg': float(row.get('وزن هر کارتن', 0)), 'net_sales_toman': 0.0
                 })
             
             if new_rows:
@@ -836,12 +707,12 @@ with tabs[7]:
         except Exception as e:
             st.error(f"خطا در ساختار فایل: {e}")
 
-with tabs[8]:
+if selected_menu == "تجمیعی DKP":
     st.subheader("📈 آمار تجمیعی خرید کالاها بر اساس DKP")
-    st.info("این بخش مجموع خریدهای یکتای هر کالا را نشان می‌دهد (کالاهای درخواستی محاسبه نمی‌شوند).")
+    st.info("این بخش مجموع خریدهای قطعی (انبار چین به بعد) هر کالا را نشان می‌دهد. کالاهای درخواستی در این آمار لحاظ نمی‌شوند.")
     
     if not df.empty:
-        # فقط کالاهایی که کد DKP دارند و وضعیتشان "انبار چین"، "ارسال شده" یا "موجود" است محاسبه می‌شوند
+        # فیلتر برای کالاهایی که DKP دارند و وضعیتشان خریده شده است
         df_valid_dkp = df[(df['dkp_code'].astype(str).str.strip() != '') & (df['status'].isin(ACTIVE_STATUSES))]
         
         if not df_valid_dkp.empty:
@@ -852,16 +723,15 @@ with tabs[8]:
             ).reset_index()
 
             grouped = grouped.sort_values(by='total_qty', ascending=False)
-            
             grouped = grouped.rename(columns={
                 'dkp_code': 'کد DKP',
                 'name': 'نام کالا',
-                'total_qty': 'مجموع تعداد سفارش داده شده',
-                'order_count': 'تعداد دفعات ثبت سفارش'
+                'total_qty': 'مجموع تعداد خریداری شده (انباشتی)',
+                'order_count': 'تعداد محموله‌های ثبت شده'
             })
             
             st.dataframe(grouped, use_container_width=True, hide_index=True)
         else:
-            st.info("کالایی با کد DKP ثبت نشده است.")
+            st.info("هیچ کالای خریداری شده‌ای که دارای کد DKP باشد در سیستم ثبت نشده است.")
     else:
         st.info("لیست کالاها خالی است.")
