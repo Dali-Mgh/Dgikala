@@ -7,7 +7,48 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 
 st.set_page_config(page_title="مدیریت هوشمند خرید (Firestore)", layout="wide")
-
+# ================= تنظیمات ظاهری و UI (CSS) =================
+st.markdown("""
+<style>
+    /* مخفی کردن هدر، فوتر و منوی پیش‌فرض استریم‌لیت برای ظاهر حرفه‌ای‌تر */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* استایل‌دهی به تب‌ها (تبدیل به دکمه‌های شیک) */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 12px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 45px;
+        background-color: white;
+        border-radius: 8px;
+        padding: 0 15px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        border: 1px solid #e0e0e0;
+        transition: all 0.2s ease-in-out;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #ef394e !important; /* رنگ قرمز سازمانی دیجی‌کالا */
+        color: white !important;
+        border: none;
+        box-shadow: 0 4px 6px rgba(239, 57, 78, 0.3);
+    }
+    
+    /* افکت شناور برای دکمه‌های کل برنامه */
+    .stButton > button {
+        border-radius: 8px;
+        transition: all 0.3s;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
+</style>
+""", unsafe_allow_html=True)
 DEFAULT_COLUMNS = [
     "id", "name", "category", "status", "dkp_code", "quantity_needed",
     "length_cm", "width_cm", "height_cm", "carton_weight_kg",
