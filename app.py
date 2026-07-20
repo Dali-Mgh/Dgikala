@@ -12,10 +12,24 @@ st.set_page_config(page_title="مدیریت هوشمند خرید", layout="wide
 
 st.markdown("""
 <style>
-    /* مخفی کردن المان‌های پیش‌فرض استریم‌لیت */
+    /* --- کدهای جدید برای رفع مشکل ناپدید شدن منو --- */
+    /* نمایش اجباری دکمه باز کردن منو در گوشه بالا */
+    [data-testid="collapsedControl"] {
+        display: flex !important;
+        visibility: visible !important;
+        opacity: 1 !important;
+        z-index: 999999 !important;
+    }
+    
+    /* اطمینان از مخفی نشدن هدر اصلی که دکمه منو داخل آن است */
+    header {
+        visibility: visible !important;
+        background-color: transparent !important;
+    }
+
+    /* مخفی کردن المان‌های پیش‌فرض استریم‌لیت (علامت سه نقطه و فوتر) */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
     
     /* استایل‌دهی به کادرهای اطلاعاتی */
     .stAlert {
